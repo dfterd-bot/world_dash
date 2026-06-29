@@ -290,40 +290,17 @@ async function fetchRSI(sym) {
   } catch { return null; }
 }
 
-// ── AI SCORING — returns dynamic tickers per sector ───────────────────────────
+// ── SCORING — server-side deterministic + RSS headlines ─────────────────────
 async function fetchAIScores(event) {
-  const secList = event.sectors.join(", ");
-
-  const userMsg =
-    "EVENT: " + event.label + "\n" +
-    "DEMAND CHAIN: " + event.demandLogic + "\n\n" +
-    "For each sector below, identify 3-5 NYSE/NASDAQ tickers most likely to see DEMAND SURGE (or drop) from this event.\n" +
-    "Choose real, liquid tickers. Score -100 to +100. Positive=demand surge. Negative=demand drop.\n" +
-    "Reasons max 10 words, ASCII only.\n\n" +
-    "SECTORS: " + secList + "\n\n" +
-    'Return ONLY this JSON structure:\n' +
-    '{"eventIntensity":65,"signal":"ELEVATED","lastSignal":"current situation in Spanish","demandSummary":"demand chain in Spanish","headlines":[{"title":"","source":"","impact":"BULLISH","summary":""}],"sectors":[{"name":"sector name","dir":"LONG","tickers":[{"sym":"XOM","score":75,"reason":"oil supply restricted drives upstream demand"}]}]}';
-
-  const res = await fetch("/api/score", {
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({ prompt: userMsg })
-  });
-
-  if(!res.ok){ const t=await res.text(); throw new Error("HTTP "+res.status+": "+t.slice(0,100)); }
+  const res = await fetch("/api/score/" + event.id);
+  if (!res.ok) { const t = await res.text(); throw new Error("HTTP " + res.status + ": " + t.slice(0,100)); }
   const data = await res.json();
-  if(data.type==="error") throw new Error(data.error?.message??"API error");
-
-  const raw = (data.content??[]).filter(b=>b.type==="text").map(b=>b.text).join("").trim()
-    .replace(/^```[a-z]*\n?/i,"").replace(/\n?```$/i,"").trim();
-
-  if(!raw) throw new Error("Empty response");
-  const s=raw.indexOf("{"), e=raw.lastIndexOf("}");
-  if(s===-1) throw new Error("No JSON. Got: "+raw.slice(0,80));
-  return JSON.parse(raw.slice(s,e+1));
+  if (data.error) throw new Error(data.error);
+  return data;
 }
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
+
 const scColor  = s => s==null?"#141414":s>0?`rgba(16,185,129,${0.1+Math.min(s/100,1)*0.55})`:`rgba(239,68,68,${0.1+Math.min(Math.abs(s)/100,1)*0.55})`;
 const scBorder = s => s==null?"#1f1f1f":s>40?"#10B98155":s<-40?"#EF444455":"#1f1f1f";
 const fmtSc    = s => s>0?"+"+s:""+s;
