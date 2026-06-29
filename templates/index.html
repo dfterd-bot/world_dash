@@ -217,6 +217,69 @@ const EVENTS = [
   { id:"BTS",       cat:"CONSUMO", label:"Back to School",  desc:"Temporada de alta demanda de consumo masivo",                 demandLogic:"Seasonal spending surge drives electronics apparel and logistics demand", sectors:["Retail","Consumer Electronics","Logistics","Apparel"] },
 ];
 
+// ── HOT STATE ────────────────────────────────────────────────────────────────
+let hotCache = null;
+let hotRunning = false;
+
+async function fetchHotTickers() {
+  if (hotRunning) return;
+  if (hotCache && Date.now() - hotCache.ts < 5*60*1000) return;
+  hotRunning = true;
+  renderHotLoading();
+  try {
+    const allScores = [];
+    await Promise.all(Object.keys(SCORE_MAP).map(async evId => {
+      try {
+        const res = await fetch("/api/score/" + evId);
+        const data = await res.json();
+        if (!data.sectors) return;
+        const meta = CAT[EVENTS.find(e=>e.id===evId)?.cat] || {};
+        for (const sec of data.sectors) {
+          for (const t of sec.tickers||[]) {
+            allScores.push({
+              sym: t.sym, score: t.score, dir: sec.dir,
+              event: evId, eventLabel: EVENTS.find(e=>e.id===evId)?.label||evId,
+              catColor: meta.color||"#fff", intensity: data.eventIntensity||0
+            });
+          }
+        }
+      } catch {}
+    }));
+    // Deduplicate — keep highest abs score per ticker
+    const map = {};
+    for (const t of allScores) {
+      if (!map[t.sym] || Math.abs(t.score) > Math.abs(map[t.sym].score)) map[t.sym] = t;
+    }
+    const sorted = Object.values(map).sort((a,b) => Math.abs(b.score)-Math.abs(a.score)).slice(0,5);
+    // Fetch RSI for top 5
+    await Promise.allSettled(sorted.map(async t => {
+      const rd = await fetchRSIData(t.sym);
+      if (rd) { t.rsi=rd.rsi; t.price=rd.price; t.chg=rd.chg; t.session=rd.session; }
+    }));
+    hotCache = { tickers: sorted, ts: Date.now() };
+    renderHot();
+  } catch(e) { renderHotError(e.message); }
+  hotRunning = false;
+}
+
+async function fetchRSIData(sym) {
+  if (rsiCache[sym] && Date.now()-rsiCache[sym].ts < 5*60*1000) return rsiCache[sym];
+  try {
+    const r = await fetch("/api/price/"+sym);
+    const d = await r.json();
+    const res = d?.chart?.result?.[0];
+    if (!res) return null;
+    const closes = (res.indicators?.quote?.[0]?.close??[]).filter(v=>v!=null);
+    const m = res.meta;
+    const prev = m._prevClose ?? m.regularMarketPreviousClose ?? m.chartPreviousClose ?? m.regularMarketPrice;
+    let price=m.regularMarketPrice, session=m._sessionLabel??"CLOSED";
+    if(m.marketState==="PRE"&&m.preMarketPrice) price=m.preMarketPrice;
+    if((m.marketState==="POST"||m.marketState==="POSTPOST")&&m.postMarketPrice) price=m.postMarketPrice;
+    const obj = { rsi:calcRSI(closes), price, chg:prev?parseFloat(((price-prev)/prev*100).toFixed(2)):0, session, ts:Date.now() };
+    rsiCache[sym]=obj; return obj;
+  } catch { return null; }
+}
+
 const CAT = {
   CLIMA:   { label:"CLIMA",    color:"#3B82F6", dot:"🌩" },
   SALUD:   { label:"SALUD",    color:"#10B981", dot:"🦠" },
@@ -224,6 +287,9 @@ const CAT = {
   TECH:    { label:"TECH",     color:"#8B5CF6", dot:"⚡" },
   CONSUMO: { label:"CONSUMO",  color:"#F59E0B", dot:"📦" },
 };
+
+// ── ALL EVENT IDS for HOT scan ───────────────────────────────────────────────
+const SCORE_MAP = ["HEATWAVE","HURRICANE","DROUGHT","FLOOD","PANDEMIC","FLU","HORMUZ","TAIWAN","NATO","AI_BOOM","CYBER","SUPERBOWL","BTS"];
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
 let activeId  = "HORMUZ";
@@ -326,6 +392,68 @@ function rsiLabel(rsi) {
   return "";
 }
 
+// ── HOT RENDER ────────────────────────────────────────────────────────────────
+function renderHotLoading() {
+  if (activeId !== "HOT") return;
+  document.getElementById("main-inner").innerHTML = `
+    <div style="padding:20px 0;display:flex;align-items:center;gap:8px">
+      <div style="width:5px;height:5px;border-radius:50%;background:#F59E0B;animation:blink 1s ease 0s infinite"></div>
+      <div style="width:5px;height:5px;border-radius:50%;background:#F59E0B;animation:blink 1s ease 0.2s infinite"></div>
+      <div style="width:5px;height:5px;border-radius:50%;background:#F59E0B;animation:blink 1s ease 0.4s infinite"></div>
+      <span style="font-size:9px;color:#4a8aaa;letter-spacing:2px">ESCANEANDO TODO EL UNIVERSO···</span>
+    </div>`;
+}
+
+function renderHotError(msg) {
+  if (activeId !== "HOT") return;
+  document.getElementById("main-inner").innerHTML = `<div style="padding:20px 0;font-size:9px;color:#EF4444">⚠ ${msg} <button onclick="fetchHotTickers()" style="background:transparent;border:1px solid #EF444433;color:#EF4444;font-size:9px;padding:2px 8px;cursor:pointer;border-radius:2px;margin-left:8px">REINTENTAR</button></div>`;
+}
+
+function renderHot() {
+  if (activeId !== "HOT") return;
+  const tickers = hotCache?.tickers || [];
+  let html = `
+    <div style="padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid #F59E0B22">
+      <div style="font-size:8px;color:#F59E0B;letter-spacing:3px;margin-bottom:3px">🔥 HOT</div>
+      <div style="font-size:15px;font-weight:700;color:#fff;margin-bottom:3px">Top 5 Tickers</div>
+      <div style="font-size:10px;color:#4a8aaa">Mayor señal de demanda en todo el universo · Score + RSI combinados</div>
+    </div>`;
+  tickers.forEach((t,i) => {
+    const sc = t.score||0;
+    const scColor = sc>0?"#4ade80":"#f87171";
+    const rsiC = t.rsi!=null ? (t.rsi<=35?"#60A5FA":t.rsi>=65?"#F59E0B":"#4a8aaa") : "#4a8aaa";
+    const rsiL = t.rsi!=null ? (t.rsi<=30?"OVERSOLD":t.rsi<=35?"OVS":t.rsi>=70?"OVERBOUGHT":t.rsi>=65?"OVB":"") : "";
+    const chgColor = (t.chg||0)>=0?"#4ade8066":"#f8717166";
+    const triangle = sc>0?"▲":"▼";
+    html += `
+    <div style="background:#112f4e;border:1px solid #1e527a;border-radius:6px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;gap:12px">
+      <div style="font-size:22px;font-weight:800;color:#1e527a;font-family:monospace;width:24px;text-align:center">${i+1}</div>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span style="font-size:16px;font-weight:800;color:#fff;font-family:monospace">${t.sym}</span>
+          <span style="font-size:8px;padding:2px 6px;border-radius:2px;background:${t.catColor}22;color:${t.catColor};letter-spacing:1px">${t.eventLabel}</span>
+          ${t.session&&t.session!=="CLOSED"?`<span style="font-size:7px;color:#3B82F6;letter-spacing:1px">${t.session}</span>`:""}
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          ${t.rsi!=null?`<span style="font-size:10px;color:${rsiC};font-family:monospace">RSI ${t.rsi}${rsiL?` · <span style="font-size:8px">${rsiL}</span>`:""}</span>`:""}
+          ${t.price!=null?`<span style="font-size:10px;color:#4a8aaa;font-family:monospace">$${t.price.toFixed(2)}</span>`:""}
+          ${t.chg!=null?`<span style="font-size:10px;font-family:monospace;color:${chgColor}">${t.chg>=0?"+":""}${t.chg}%</span>`:""}
+        </div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:20px;font-weight:800;font-family:monospace;color:${scColor}">${triangle} ${sc>0?"+"+sc:sc}</div>
+        <div style="font-size:8px;color:#4a8aaa;letter-spacing:1px">${t.dir}</div>
+      </div>
+    </div>`;
+  });
+  if (hotCache?.ts) {
+    html += `<div style="font-size:8px;color:#1e527a;margin-top:8px">Actualizado ${new Date(hotCache.ts).toLocaleTimeString("es-AR")} · auto-refresh 5min</div>`;
+  }
+  document.getElementById("main-inner").innerHTML = html;
+  document.getElementById("top-movers").innerHTML = "";
+  document.getElementById("heatmap").innerHTML = "";
+}
+
 // ── RENDER ────────────────────────────────────────────────────────────────────
 function renderSidebar() {
   let html="";
@@ -347,7 +475,8 @@ function renderSidebar() {
 function renderMobilePills() {
   if(window.innerWidth>768){document.getElementById("mobile-pills").style.display="none";return;}
   document.getElementById("mobile-pills").style.display="block";
-  let html="";
+  const isHot = activeId==="HOT";
+  let html=`<span onclick="switchEvent('HOT')" style="display:inline-block;margin-right:5px;padding:4px 9px;border-radius:12px;font-size:9px;cursor:pointer;font-weight:${isHot?700:400};background:${isHot?"#F59E0B22":"#111"};color:${isHot?"#F59E0B":"#555"};border:1px solid ${isHot?"#F59E0B":"#222"}">🔥 HOT</span>`;
   for(const [cat,meta] of Object.entries(CAT)){
     for(const ev of EVENTS.filter(e=>e.cat===cat)){
       const isA=ev.id===activeId;
@@ -359,6 +488,12 @@ function renderMobilePills() {
 
 function renderTabs() {
   let html="";
+  // HOT tab first
+  const isHot = activeId === "HOT";
+  html+=`<button class="tab-btn${isHot?" active":""}" onclick="switchEvent('HOT')" style="border-top-color:${isHot?"#F59E0B":"transparent"}">
+    <span class="tab-num" style="color:${isHot?"#F59E0B":"#2a2a2a"}">🔥</span>
+    <span class="tab-name" style="color:${isHot?"#F59E0B":"#2a2a2a"}">HOT</span>
+  </button>`;
   EVENTS.forEach((ev,i)=>{
     const meta=CAT[ev.cat], isA=ev.id===activeId, eAI=aiCache[ev.id];
     html+=`<button class="tab-btn${isA?" active":""}" onclick="switchEvent('${ev.id}')" style="border-top-color:${isA?meta.color:"transparent"}">
@@ -513,6 +648,11 @@ async function refreshRSI() {
 
 // ── FULL RENDER ───────────────────────────────────────────────────────────────
 function render(loadingAI, error) {
+  if (activeId === "HOT") {
+    renderSidebar(); renderTabs(); renderMobilePills(); updateMarket();
+    if (hotCache) renderHot(); else if (!hotRunning) fetchHotTickers();
+    return;
+  }
   const event=EVENTS.find(e=>e.id===activeId);
   const ai=aiCache[activeId];
   renderSidebar();
