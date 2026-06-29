@@ -306,7 +306,7 @@ const scBorder = s => s==null?"#1f1f1f":s>40?"#10B98155":s<-40?"#EF444455":"#1f1
 const fmtSc    = s => s>0?"+"+s:""+s;
 const fmtChg   = c => c>=0?"+"+c+"%":c+"%";
 const iCol     = n => n>=70?"#EF4444":n>=40?"#F59E0B":"#10B981";
-const sesCol   = {LIVE:"#10B981",PRE:"#3B82F6",POST:"#F59E0B",CLOSE:"#374151"};
+const sesCol   = {LIVE:"#10B981",PRE:"#3B82F6",POST:"#F59E0B",CLOSED:"#374151"};
 const impCol   = {BULLISH:"#10B981",BEARISH:"#EF4444",NEUTRAL:"#374151"};
 
 function rsiColor(rsi) {
@@ -465,9 +465,9 @@ function renderHeatmap(event, ai) {
       const sesC=rd?.session?sesCol[rd.session]:"";
 
       html+=`<div class="tc" style="background:${scColor(t.score)};border:1px solid ${scBorder(t.score)};box-shadow:${hot?("0 0 10px "+(t.score>0?"#10B98118":"#EF444418")):"none"}">
-        ${rd?.session?`<span class="ses-tag" style="color:${sesC}">${rd.session}</span>`:""}
+        ${rd?.session&&rd.session!=="CLOSED"?`<span class="ses-tag" style="color:${sesC}">${rd.session}</span>`:""}
         ${hot?`<div class="hot-dot" style="background:${t.score>0?"#10B981":"#EF4444"}"></div>`:""}
-        <div class="sym" style="margin-top:${rd?.session?8:0}px">${t.sym}</div>
+        <div class="sym" style="margin-top:${rd?.session&&rd.session!=="CLOSED"?8:0}px">${t.sym}</div>
         <div class="score-val" style="color:${t.score>0?"#10B981":t.score<0?"#EF4444":"#555"}">${fmtSc(t.score)}</div>
         <div class="rsi-row">
           ${rsi!=null
