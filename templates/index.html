@@ -278,11 +278,11 @@ async function fetchRSI(sym) {
     if (!res) return null;
     const closes = res.indicators?.quote?.[0]?.close?.filter(v=>v!=null) ?? [];
     const m = res.meta;
-    const prev = m.chartPreviousClose ?? m.previousClose ?? m.regularMarketPrice;
-    let price=m.regularMarketPrice, session="CLOSE";
-    if(m.marketState==="PRE"&&m.preMarketPrice){price=m.preMarketPrice;session="PRE";}
-    if((m.marketState==="POST"||m.marketState==="POSTPOST")&&m.postMarketPrice){price=m.postMarketPrice;session="POST";}
-    if(m.marketState==="REGULAR") session="LIVE";
+    // _prevClose set by server using regularMarketPreviousClose for accurate daily chg
+    const prev = m._prevClose ?? m.regularMarketPreviousClose ?? m.chartPreviousClose ?? m.regularMarketPrice;
+    let price=m.regularMarketPrice, session=m._sessionLabel??"CLOSED";
+    if(m.marketState==="PRE"&&m.preMarketPrice){price=m.preMarketPrice;}
+    if((m.marketState==="POST"||m.marketState==="POSTPOST")&&m.postMarketPrice){price=m.postMarketPrice;}
     const rsi = calcRSI(closes);
     const obj = { rsi, price, chg: prev?parseFloat(((price-prev)/prev*100).toFixed(2)):0, session, ts:Date.now() };
     rsiCache[sym] = obj;
