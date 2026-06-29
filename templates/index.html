@@ -395,7 +395,9 @@ function rsiLabel(rsi) {
 // ── HOT RENDER ────────────────────────────────────────────────────────────────
 function renderHotLoading() {
   if (activeId !== "HOT") return;
-  document.getElementById("main-inner").innerHTML = `
+  const el = document.getElementById("main-inner");
+  if (!el) return;
+  el.innerHTML = `
     <div style="padding:20px 0;display:flex;align-items:center;gap:8px">
       <div style="width:5px;height:5px;border-radius:50%;background:#F59E0B;animation:blink 1s ease 0s infinite"></div>
       <div style="width:5px;height:5px;border-radius:50%;background:#F59E0B;animation:blink 1s ease 0.2s infinite"></div>
@@ -406,11 +408,15 @@ function renderHotLoading() {
 
 function renderHotError(msg) {
   if (activeId !== "HOT") return;
-  document.getElementById("main-inner").innerHTML = `<div style="padding:20px 0;font-size:9px;color:#EF4444">⚠ ${msg} <button onclick="fetchHotTickers()" style="background:transparent;border:1px solid #EF444433;color:#EF4444;font-size:9px;padding:2px 8px;cursor:pointer;border-radius:2px;margin-left:8px">REINTENTAR</button></div>`;
+  const el = document.getElementById("main-inner");
+  if (!el) return;
+  el.innerHTML = `<div style="padding:20px 0;font-size:9px;color:#EF4444">⚠ ${msg} <button onclick="fetchHotTickers()" style="background:transparent;border:1px solid #EF444433;color:#EF4444;font-size:9px;padding:2px 8px;cursor:pointer;border-radius:2px;margin-left:8px">REINTENTAR</button></div>`;
 }
 
 function renderHot() {
   if (activeId !== "HOT") return;
+  const el = document.getElementById("main-inner");
+  if (!el) return;
   const tickers = hotCache?.tickers || [];
   let html = `
     <div style="padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid #F59E0B22">
@@ -449,9 +455,11 @@ function renderHot() {
   if (hotCache?.ts) {
     html += `<div style="font-size:8px;color:#1e527a;margin-top:8px">Actualizado ${new Date(hotCache.ts).toLocaleTimeString("es-AR")} · auto-refresh 5min</div>`;
   }
-  document.getElementById("main-inner").innerHTML = html;
-  document.getElementById("top-movers").innerHTML = "";
-  document.getElementById("heatmap").innerHTML = "";
+  el.innerHTML = html;
+  const tmEl = document.getElementById("top-movers");
+  if (tmEl) tmEl.innerHTML = "";
+  const hmEl = document.getElementById("heatmap");
+  if (hmEl) hmEl.innerHTML = "";
 }
 
 // ── RENDER ────────────────────────────────────────────────────────────────────
@@ -650,7 +658,15 @@ async function refreshRSI() {
 function render(loadingAI, error) {
   if (activeId === "HOT") {
     renderSidebar(); renderTabs(); renderMobilePills(); updateMarket();
-    if (hotCache) renderHot(); else if (!hotRunning) fetchHotTickers();
+    // Clear main content area for HOT view
+    const mi = document.getElementById("main-inner");
+    if (mi) { mi.innerHTML = ""; }
+    const tm = document.getElementById("top-movers");
+    if (tm) tm.innerHTML = "";
+    const hm = document.getElementById("heatmap");
+    if (hm) hm.innerHTML = "";
+    if (hotCache) renderHot();
+    else if (!hotRunning) fetchHotTickers();
     return;
   }
   const event=EVENTS.find(e=>e.id===activeId);
