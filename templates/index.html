@@ -531,13 +531,13 @@ function render(loadingAI, error) {
 function switchEvent(id) {
   activeId=id;
   render(aiRunning, null);
-  runAI(false);
+  runAI(true); // always force on switch
 }
 
 async function runAI(force) {
   if(aiRunning) return;
   const ex=aiCache[activeId];
-  if(!force && ex && Date.now()-ex.ts < 5*60*1000) { refreshRSI(); return; }
+  if(!force && ex && ex.ts && Date.now()-ex.ts < 5*60*1000) { refreshRSI(); return; }
   aiRunning=true;
   const btn=document.getElementById("scan-btn");
   if(btn){btn.textContent="···";btn.disabled=true;}
@@ -567,8 +567,9 @@ function toggleWire() {
 setInterval(updateMarket, 1000);
 setInterval(refreshRSI, 60000);
 
+// Force scan immediately — works on both desktop and mobile
 render(false, null);
-runAI(false);
+setTimeout(() => runAI(true), 300);
 </script>
 </body>
 </html>
