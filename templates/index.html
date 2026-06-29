@@ -272,7 +272,7 @@ async function fetchRSI(sym) {
   // Check cache (5min)
   if (rsiCache[sym] && Date.now()-rsiCache[sym].ts < 5*60*1000) return rsiCache[sym];
   try {
-    const r = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=30d`);
+    const r = await fetch(`/api/price/${sym}`);
     const d = await r.json();
     const res = d?.chart?.result?.[0];
     if (!res) return null;
