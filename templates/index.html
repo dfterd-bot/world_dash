@@ -304,15 +304,10 @@ async function fetchAIScores(event) {
     'Return ONLY this JSON structure:\n' +
     '{"eventIntensity":65,"signal":"ELEVATED","lastSignal":"current situation in Spanish","demandSummary":"demand chain in Spanish","headlines":[{"title":"","source":"","impact":"BULLISH","summary":""}],"sectors":[{"name":"sector name","dir":"LONG","tickers":[{"sym":"XOM","score":75,"reason":"oil supply restricted drives upstream demand"}]}]}';
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await fetch("/api/score", {
     method:"POST",
     headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({
-      model:"claude-sonnet-4-6",
-      max_tokens:2000,
-      system:"You are a JSON-only financial analysis engine. Output ONLY valid JSON starting with {. No prose, no markdown, no backticks.",
-      messages:[{role:"user",content:userMsg}]
-    })
+    body: JSON.stringify({ prompt: userMsg })
   });
 
   if(!res.ok){ const t=await res.text(); throw new Error("HTTP "+res.status+": "+t.slice(0,100)); }
