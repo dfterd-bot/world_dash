@@ -143,18 +143,22 @@ def price(symbol):
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=8) as r:
             data = json.loads(r.read())
-        # Fix: always use regularMarketPreviousClose for accurate daily chg
+        # Fix: calculate chg from last two actual closing prices in historical data
         try:
             result = data["chart"]["result"][0]
             meta = result["meta"]
-            # Prefer regularMarketPreviousClose over chartPreviousClose
-            if "regularMarketPreviousClose" in meta:
+            closes = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
+            closes = [c for c in closes if c is not None]
+            # Use last two closes for accurate daily change
+            if len(closes) >= 2:
+                meta["_prevClose"] = closes[-2]
+            elif "regularMarketPreviousClose" in meta:
                 meta["_prevClose"] = meta["regularMarketPreviousClose"]
             elif "chartPreviousClose" in meta:
                 meta["_prevClose"] = meta["chartPreviousClose"]
             # Normalize marketState label
             state = meta.get("marketState", "CLOSED")
-            if state == "CLOSED" or state == "POSTPOST":
+            if state in ("CLOSED", "POSTPOST"):
                 meta["_sessionLabel"] = "CLOSED"
             elif state == "PRE":
                 meta["_sessionLabel"] = "PRE"
