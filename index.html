@@ -28,6 +28,26 @@
 
   /* SIDEBAR */
   #sidebar { width:190px; background:#000; border-right:1px solid #1a1a1a; overflow-y:auto; flex-shrink:0; }
+
+  /* MOBILE */
+  @media (max-width: 768px) {
+    #sidebar { display:none; }
+    #wire { display:none; }
+    #layout { flex-direction:column; }
+    #main { width:100%; }
+    .tickers-row { gap:4px; }
+    .ticker-cell { min-width:72px; padding:8px 8px; }
+    .ticker-cell .sym { font-size:10px; }
+    .ticker-cell .score-val { font-size:13px; }
+    #tabs { height:auto; flex-wrap:nowrap; overflow-x:auto; }
+    .tab-btn { padding:6px 10px; flex-direction:column; height:auto; gap:2px; }
+    .tab-name { font-size:7px; }
+    #main-inner { padding:12px 14px; }
+    .ev-name { font-size:13px; }
+    .logic-pill { display:none; }
+    #mobile-wire-toggle { display:flex !important; }
+    #wire.mobile-visible { display:flex !important; position:fixed; top:40px; left:0; right:0; bottom:34px; z-index:50; width:100%; }
+  }
   .cat-header { padding:9px 13px 5px; border-bottom:1px solid #0d0d0d; display:flex; align-items:center; gap:7px; }
   .cat-header .cat-dot { font-size:10px; }
   .cat-header .cat-label { font-size:8px; letter-spacing:3px; font-weight:700; }
@@ -137,6 +157,9 @@
   <div style="display:flex;align-items:center">
     <span class="brand">DEMAND SIGNAL</span>
     <span class="tag">EVENT → DEMAND → TICKER</span>
+  </div>
+  <div id="mobile-wire-toggle" onclick="toggleWire()" style="display:none;align-items:center;cursor:pointer;padding:0 10px;border-right:1px solid #1a1a1a;">
+    <span style="font-size:9px;color:#EF4444;letter-spacing:2px;font-weight:700">⚡ WIRE</span>
   </div>
   <div class="right">
     <div style="display:flex;align-items:center">
@@ -420,6 +443,30 @@ function renderTopMovers(scores) {
   document.getElementById("top-movers").innerHTML = html;
 }
 
+function renderMobileEventPills() {
+  // inject a mobile-only pill bar if not exists
+  let bar = document.getElementById("mobile-event-pills");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "mobile-event-pills";
+    bar.style.cssText = "display:none;overflow-x:auto;white-space:nowrap;padding:8px 14px;border-bottom:1px solid #111;background:#000;flex-shrink:0;";
+    document.getElementById("main").insertBefore(bar, document.getElementById("main-inner"));
+  }
+  // only show on mobile via CSS
+  if (window.innerWidth <= 768) bar.style.display = "block";
+  const cats = {};
+  EVENTS.forEach(ev => { if (!cats[ev.cat]) cats[ev.cat] = []; cats[ev.cat].push(ev); });
+  let html = "";
+  for (const [cat, evs] of Object.entries(cats)) {
+    const meta = CAT[cat];
+    evs.forEach(ev => {
+      const isAct = ev.id === activeId;
+      html += `<span onclick="switchEvent('${ev.id}')" style="display:inline-block;margin-right:6px;padding:4px 10px;border-radius:12px;font-size:9px;cursor:pointer;letter-spacing:1px;font-weight:${isAct?700:400};background:${isAct?meta.color+"22":"#111"};color:${isAct?meta.color:"#555"};border:1px solid ${isAct?meta.color:"#222"}">${meta.dot} ${ev.label}</span>`;
+    });
+  }
+  bar.innerHTML = html;
+}
+
 function renderHeatmap(event, ai) {
   const scores = ai?.scores ?? {};
   const loading = aiRunning;
@@ -486,6 +533,7 @@ function render(loadingAI, error) {
   const event = EVENTS.find(e=>e.id===activeId);
   const ai    = aiCache[activeId];
   renderSidebar();
+  renderMobileEventPills();
   renderTabs();
   renderEventHeader(event, ai);
   if (loadingAI && !ai) renderLoadingState();
@@ -539,6 +587,12 @@ async function scan(force=false) {
   const event = EVENTS.find(e=>e.id===activeId);
   await loadPrices([...new Set(event.sectors.flatMap(s=>s.tickers))]);
   await runAI(force);
+}
+
+// ── MOBILE WIRE TOGGLE ───────────────────────────────────────────────────────
+function toggleWire() {
+  const wire = document.getElementById("wire");
+  wire.classList.toggle("mobile-visible");
 }
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
