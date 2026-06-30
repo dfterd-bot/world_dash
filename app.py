@@ -3,21 +3,45 @@ import urllib.request
 import json
 import os
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, date, timedelta
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 
-# ── RSS SOURCES ───────────────────────────────────────────────────────────────
-RSS_FEEDS = [
-    "https://feeds.reuters.com/reuters/businessNews",
-    "https://feeds.reuters.com/reuters/topNews",
-    "https://www.cnbc.com/id/100003114/device/rss/rss.html",
-    "https://www.cnbc.com/id/10000664/device/rss/rss.html",
-    "https://feeds.bbci.co.uk/news/business/rss.xml",
-    "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml",
-]
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-# ── SCORING MAP ───────────────────────────────────────────────────────────────
+# ── DB CONNECTION ─────────────────────────────────────────────────────────────
+def get_db():
+    return psycopg2.connect(DATABASE_URL)
+
+def init_db():
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS signal_log (
+                id          SERIAL PRIMARY KEY,
+                logged_at   TIMESTAMP DEFAULT NOW(),
+                log_date    DATE DEFAULT CURRENT_DATE,
+                sym         VARCHAR(20),
+                event_id    VARCHAR(50),
+                score       INTEGER,
+                dir         VARCHAR(10),
+                rsi         FLOAT,
+                price_entry FLOAT,
+                price_exit  FLOAT,
+                chg_pct     FLOAT,
+                correct     BOOLEAN
+            );
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print("DB init error:", e)
+
+# ── SCORE MAP ─────────────────────────────────────────────────────────────────
 SCORE_MAP = {
     "HEATWAVE":  {"CEG":80,"VST":75,"NRG":70,"AES":60,"ETR":65,"LNG":70,"EQT":65,"AR":60,"SWN":55,"LII":75,"CARR":70,"TT":65,"NEE":40,"DUK":35,"SO":35,"AEP":35},
     "HURRICANE": {"GNRC":85,"SHYF":60,"POWI":55,"HD":75,"LOW":70,"SHW":65,"MLM":70,"VMC":70,"MPC":60,"VLO":55,"PSX":50,"RE":-70,"RNR":-65,"MKL":-60},
@@ -57,79 +81,170 @@ INTENSITY_MAP = {
 }
 
 DEMAND_SUMMARY = {
-    "HEATWAVE":  "Ola de calor dispara consumo electrico por uso masivo de AC, beneficiando generadoras y distribuidoras de gas natural.",
-    "HURRICANE": "Huracan destruye infraestructura generando demanda urgente de generadores, materiales de construccion y perjudicando aseguradoras.",
-    "DROUGHT":   "Sequia dana cosechas disparando precios de commodities y demanda de fertilizantes para replantacion masiva.",
-    "FLOOD":     "Inundaciones generan demanda de infraestructura hidrica y reconstruccion, golpeando seguros de propiedad.",
-    "PANDEMIC":  "Brote pandemico dispara demanda de vacunas, diagnosticos y EPP, hundiendo aereas y hoteleria.",
-    "FLU":       "Temporada de gripe severa impulsa ventas de antivirales, tests rapidos y trafico en farmacias.",
-    "HORMUZ":    "Bloqueo en Hormuz restringe oferta de crudo, disparando precios y beneficiando productores mientras hunde aereas.",
-    "TAIWAN":    "Escalada militar eleva gasto en defensa y activos refugio, generando panico en cadena de suministro de chips.",
-    "NATO":      "Conflicto OTAN dispara contratos de defensa, demanda de energia y flujos hacia activos seguros.",
-    "AI_BOOM":   "Boom de IA escala demanda de chips, energia para datacenters, refrigeracion y redes de fibra optica.",
-    "CYBER":     "Ataque cibernetico genera demanda urgente de soluciones de seguridad, perjudicando entidades atacadas.",
-    "SUPERBOWL": "Evento masivo impulsa consumo de bebidas, snacks, streaming, publicidad y servicios de delivery.",
-    "BTS":       "Temporada escolar dispara gasto en electronica, ropa y logistica de entrega masiva.",
+    "HEATWAVE":  "Ola de calor dispara consumo electrico por uso masivo de AC.",
+    "HURRICANE": "Huracan destruye infraestructura generando demanda urgente de generadores y construccion.",
+    "DROUGHT":   "Sequia dana cosechas disparando precios de commodities y fertilizantes.",
+    "FLOOD":     "Inundaciones generan demanda de infraestructura hidrica y reconstruccion.",
+    "PANDEMIC":  "Brote pandemico dispara demanda de vacunas, diagnosticos y EPP.",
+    "FLU":       "Temporada de gripe severa impulsa ventas de antivirales y tests rapidos.",
+    "HORMUZ":    "Bloqueo en Hormuz restringe oferta de crudo, beneficiando productores.",
+    "TAIWAN":    "Escalada militar eleva gasto en defensa y activos refugio.",
+    "NATO":      "Conflicto OTAN dispara contratos de defensa y activos seguros.",
+    "AI_BOOM":   "Boom de IA escala demanda de chips, energia y datacenters.",
+    "CYBER":     "Ataque cibernetico genera demanda urgente de soluciones de seguridad.",
+    "SUPERBOWL": "Evento masivo impulsa consumo de bebidas, snacks y streaming.",
+    "BTS":       "Temporada escolar dispara gasto en electronica y logistica.",
 }
 
-# ── RSS FETCH ─────────────────────────────────────────────────────────────────
 KEYWORDS = {
-    "HEATWAVE":  ["heat wave","heatwave","extreme heat","temperature record","electricity demand","power grid","AC demand"],
-    "HURRICANE": ["hurricane","tropical storm","cyclone","storm surge","landfall","evacuation","gulf coast"],
-    "DROUGHT":   ["drought","crop damage","harvest","rainfall deficit","water shortage","agriculture","corn","wheat","soybean"],
-    "FLOOD":     ["flood","flooding","heavy rain","levee","dam","inundation","storm water"],
-    "PANDEMIC":  ["pandemic","outbreak","WHO","pathogen","virus","epidemic","health emergency","infection"],
-    "FLU":       ["flu","influenza","respiratory","antiviral","hospitalization","CDC","illness"],
-    "HORMUZ":    ["hormuz","strait","tanker","oil supply","iran","gulf","crude","opec","pipeline"],
-    "TAIWAN":    ["taiwan","strait","china military","pla","semiconductor","chip","tsmc","escalation"],
-    "NATO":      ["nato","russia","ukraine","escalation","military","missile","nuclear","europe conflict"],
-    "AI_BOOM":   ["artificial intelligence","AI investment","data center","nvidia","chips","openai","llm","gpu"],
-    "CYBER":     ["cyberattack","ransomware","hack","breach","infrastructure attack","cybersecurity","malware"],
-    "SUPERBOWL": ["super bowl","world cup","championship","nfl","fifa","advertising","viewership"],
-    "BTS":       ["back to school","retail sales","consumer spending","holiday shopping","electronics demand"],
+    "HEATWAVE":  ["heat wave","heatwave","extreme heat","temperature record","electricity demand"],
+    "HURRICANE": ["hurricane","tropical storm","cyclone","storm surge","landfall"],
+    "DROUGHT":   ["drought","crop damage","harvest","rainfall deficit","water shortage"],
+    "FLOOD":     ["flood","flooding","heavy rain","levee","inundation"],
+    "PANDEMIC":  ["pandemic","outbreak","WHO","pathogen","virus","epidemic"],
+    "FLU":       ["flu","influenza","respiratory","antiviral","hospitalization"],
+    "HORMUZ":    ["hormuz","strait","tanker","oil supply","iran","gulf","crude"],
+    "TAIWAN":    ["taiwan","strait","china military","pla","semiconductor","tsmc"],
+    "NATO":      ["nato","russia","ukraine","escalation","military","missile"],
+    "AI_BOOM":   ["artificial intelligence","AI investment","data center","nvidia","chips"],
+    "CYBER":     ["cyberattack","ransomware","hack","breach","infrastructure attack"],
+    "SUPERBOWL": ["super bowl","world cup","championship","nfl","fifa","advertising"],
+    "BTS":       ["back to school","retail sales","consumer spending","electronics demand"],
 }
 
-def fetch_rss_headlines(event_id):
+RSS_FEEDS = [
+    "https://feeds.reuters.com/reuters/businessNews",
+    "https://feeds.reuters.com/reuters/topNews",
+    "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+    "https://feeds.bbci.co.uk/news/business/rss.xml",
+]
+
+# ── HELPERS ───────────────────────────────────────────────────────────────────
+def fetch_price(symbol):
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=5d"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=8) as r:
+        data = json.loads(r.read())
+    result = data["chart"]["result"][0]
+    meta   = result["meta"]
+    closes = [c for c in result.get("indicators",{}).get("quote",[{}])[0].get("close",[]) if c]
+    price  = meta.get("regularMarketPrice", closes[-1] if closes else None)
+    prev   = closes[-2] if len(closes) >= 2 else meta.get("chartPreviousClose", price)
+    state  = meta.get("marketState","CLOSED")
+    session = {"REGULAR":"LIVE","PRE":"PRE","POST":"POST","POSTPOST":"POST"}.get(state,"CLOSED")
+    meta["_prevClose"]    = prev
+    meta["_sessionLabel"] = session
+    return data
+
+def fetch_rss(event_id):
     keywords = [k.lower() for k in KEYWORDS.get(event_id, [])]
     headlines = []
     for feed_url in RSS_FEEDS:
         try:
             req = urllib.request.Request(feed_url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=6) as r:
-                raw = r.read()
-            root = ET.fromstring(raw)
-            ns = {}
-            items = root.findall(".//item")
-            for item in items[:30]:
-                title_el = item.find("title")
-                desc_el  = item.find("description")
-                link_el  = item.find("link")
-                title = title_el.text if title_el is not None else ""
-                desc  = desc_el.text  if desc_el  is not None else ""
+                root = ET.fromstring(r.read())
+            for item in root.findall(".//item")[:30]:
+                title = (item.find("title").text or "") if item.find("title") is not None else ""
+                desc  = (item.find("description").text or "") if item.find("description") is not None else ""
                 combined = (title + " " + desc).lower()
                 if any(kw in combined for kw in keywords):
-                    impact = "BULLISH"
-                    neg_words = ["decline","fall","drop","cut","risk","warn","fear","crash","concern"]
-                    pos_words = ["surge","rise","gain","jump","boost","record","high","demand"]
-                    neg_count = sum(1 for w in neg_words if w in combined)
-                    pos_count = sum(1 for w in pos_words if w in combined)
-                    if neg_count > pos_count:
-                        impact = "BEARISH"
-                    elif neg_count == pos_count:
-                        impact = "NEUTRAL"
-                    headlines.append({
-                        "title": title[:120],
-                        "source": feed_url.split("/")[2].replace("www.","").replace("feeds.",""),
-                        "impact": impact,
-                        "summary": desc[:100].strip() if desc else title[:80]
-                    })
-                    if len(headlines) >= 6:
-                        break
-            if len(headlines) >= 6:
-                break
-        except:
-            continue
+                    neg = sum(1 for w in ["decline","fall","drop","risk","warn","fear"] if w in combined)
+                    pos = sum(1 for w in ["surge","rise","gain","jump","boost","record"] if w in combined)
+                    impact = "BEARISH" if neg > pos else "NEUTRAL" if neg == pos else "BULLISH"
+                    headlines.append({"title":title[:120],"source":feed_url.split("/")[2].replace("www.","").replace("feeds.",""),"impact":impact,"summary":desc[:100].strip()})
+                    if len(headlines) >= 5: break
+        except: continue
+        if len(headlines) >= 5: break
     return headlines[:5]
+
+# ── LOG TODAY'S TOP SIGNALS ──────────────────────────────────────────────────
+def log_signals():
+    """Called daily — logs top tickers with entry price"""
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        today = date.today()
+        # Check if already logged today
+        cur.execute("SELECT COUNT(*) FROM signal_log WHERE log_date = %s", (today,))
+        if cur.fetchone()[0] > 0:
+            cur.close(); conn.close(); return
+
+        # Get top 10 tickers across all events
+        all_tickers = []
+        for ev_id, scores in SCORE_MAP.items():
+            for sym, score in scores.items():
+                all_tickers.append({"sym":sym,"score":score,"event_id":ev_id})
+
+        # Deduplicate — keep max abs score
+        dedup = {}
+        for t in all_tickers:
+            if t["sym"] not in dedup or abs(t["score"]) > abs(dedup[t["sym"]]["score"]):
+                dedup[t["sym"]] = t
+        top10 = sorted(dedup.values(), key=lambda x: abs(x["score"]), reverse=True)[:10]
+
+        for t in top10:
+            try:
+                data   = fetch_price(t["sym"])
+                result = data["chart"]["result"][0]
+                meta   = result["meta"]
+                closes = [c for c in result.get("indicators",{}).get("quote",[{}])[0].get("close",[]) if c]
+                price  = meta.get("regularMarketPrice", closes[-1] if closes else None)
+                # RSI
+                rsi = None
+                if len(closes) >= 15:
+                    gains = losses = 0
+                    for i in range(1,15):
+                        d = closes[i]-closes[i-1]
+                        if d > 0: gains += d
+                        else: losses += abs(d)
+                    ag, al = gains/14, losses/14
+                    rsi = round(100-(100/(1+ag/al)),1) if al else 100
+                # Dir
+                sec_data = SECTOR_MAP.get(t["event_id"],[])
+                dir_ = "LONG"
+                for sec in sec_data:
+                    if t["sym"] in sec["tickers"]: dir_ = sec["dir"]; break
+                cur.execute("""
+                    INSERT INTO signal_log (sym, event_id, score, dir, rsi, price_entry)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (t["sym"], t["event_id"], t["score"], dir_, rsi, price))
+            except: continue
+        conn.commit()
+        cur.close(); conn.close()
+    except Exception as e:
+        print("Log error:", e)
+
+def update_exits():
+    """Updates price_exit and correct for entries older than 1 day"""
+    try:
+        conn = get_db()
+        cur  = conn.cursor(cursor_factory=RealDictCursor)
+        yesterday = date.today() - timedelta(days=1)
+        cur.execute("""
+            SELECT id, sym, score, dir, price_entry
+            FROM signal_log
+            WHERE log_date <= %s AND price_exit IS NULL AND price_entry IS NOT NULL
+        """, (yesterday,))
+        rows = cur.fetchall()
+        for row in rows:
+            try:
+                data   = fetch_price(row["sym"])
+                result = data["chart"]["result"][0]
+                meta   = result["meta"]
+                price_exit = meta.get("regularMarketPrice")
+                if not price_exit or not row["price_entry"]: continue
+                chg_pct = round((price_exit - row["price_entry"]) / row["price_entry"] * 100, 2)
+                # Correct = price moved in direction of score
+                correct = (row["score"] > 0 and chg_pct > 0) or (row["score"] < 0 and chg_pct < 0)
+                cur.execute("""
+                    UPDATE signal_log SET price_exit=%s, chg_pct=%s, correct=%s WHERE id=%s
+                """, (price_exit, chg_pct, correct, row["id"]))
+            except: continue
+        conn.commit()
+        cur.close(); conn.close()
+    except Exception as e:
+        print("Exit update error:", e)
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
 @app.route("/")
@@ -139,37 +254,7 @@ def index():
 @app.route("/api/price/<symbol>")
 def price(symbol):
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=30d"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            data = json.loads(r.read())
-        # Fix: calculate chg from last two actual closing prices in historical data
-        try:
-            result = data["chart"]["result"][0]
-            meta = result["meta"]
-            closes = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
-            closes = [c for c in closes if c is not None]
-            # Use last two closes for accurate daily change
-            if len(closes) >= 2:
-                meta["_prevClose"] = closes[-2]
-            elif "regularMarketPreviousClose" in meta:
-                meta["_prevClose"] = meta["regularMarketPreviousClose"]
-            elif "chartPreviousClose" in meta:
-                meta["_prevClose"] = meta["chartPreviousClose"]
-            # Normalize marketState label
-            state = meta.get("marketState", "CLOSED")
-            if state in ("CLOSED", "POSTPOST"):
-                meta["_sessionLabel"] = "CLOSED"
-            elif state == "PRE":
-                meta["_sessionLabel"] = "PRE"
-            elif state == "POST":
-                meta["_sessionLabel"] = "POST"
-            elif state == "REGULAR":
-                meta["_sessionLabel"] = "LIVE"
-            else:
-                meta["_sessionLabel"] = state
-        except:
-            pass
+        data = fetch_price(symbol)
         return jsonify(data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -177,40 +262,151 @@ def price(symbol):
 @app.route("/api/score/<event_id>")
 def score(event_id):
     try:
-        sectors   = SECTOR_MAP.get(event_id, [])
+        sectors    = SECTOR_MAP.get(event_id, [])
         scores_raw = SCORE_MAP.get(event_id, {})
-        intensity = INTENSITY_MAP.get(event_id, 40)
-        demand    = DEMAND_SUMMARY.get(event_id, "")
-        headlines = fetch_rss_headlines(event_id)
-
-        # Build sectors with scores
+        intensity  = INTENSITY_MAP.get(event_id, 40)
+        demand     = DEMAND_SUMMARY.get(event_id, "")
+        headlines  = fetch_rss(event_id)
         sectors_out = []
         for sec in sectors:
-            tickers_out = []
-            for sym in sec["tickers"]:
-                sc = scores_raw.get(sym, 0)
-                tickers_out.append({"sym": sym, "score": sc, "reason": ""})
-            sectors_out.append({
-                "name": sec["name"],
-                "dir":  sec["dir"],
-                "tickers": tickers_out
-            })
-
-        signal = "QUIET"
-        if intensity >= 70: signal = "ACTIVE"
-        elif intensity >= 45: signal = "ELEVATED"
-
+            tickers_out = [{"sym":sym,"score":scores_raw.get(sym,0),"reason":""} for sym in sec["tickers"]]
+            sectors_out.append({"name":sec["name"],"dir":sec["dir"],"tickers":tickers_out})
+        signal = "ACTIVE" if intensity>=70 else "ELEVATED" if intensity>=45 else "QUIET"
         return jsonify({
-            "eventIntensity": intensity,
-            "signal":         signal,
-            "lastSignal":     headlines[0]["title"] if headlines else "",
-            "demandSummary":  demand,
-            "headlines":      headlines,
-            "sectors":        sectors_out,
+            "eventIntensity": intensity, "signal": signal,
+            "lastSignal": headlines[0]["title"] if headlines else "",
+            "demandSummary": demand, "headlines": headlines, "sectors": sectors_out,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/log", methods=["POST"])
+def trigger_log():
+    log_signals()
+    update_exits()
+    return jsonify({"ok": True})
+
+@app.route("/status")
+def status():
+    try:
+        update_exits()
+        log_signals()
+        conn = get_db()
+        cur  = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Overall accuracy
+        cur.execute("SELECT COUNT(*) as total, SUM(CASE WHEN correct THEN 1 ELSE 0 END) as hits FROM signal_log WHERE correct IS NOT NULL")
+        overall = cur.fetchone()
+
+        # By event
+        cur.execute("""
+            SELECT event_id,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN correct THEN 1 ELSE 0 END) as hits,
+                   ROUND(AVG(chg_pct)::numeric,2) as avg_chg
+            FROM signal_log WHERE correct IS NOT NULL
+            GROUP BY event_id ORDER BY hits DESC
+        """)
+        by_event = cur.fetchall()
+
+        # Last 20 signals with result
+        cur.execute("""
+            SELECT sym, event_id, score, dir, rsi,
+                   price_entry, price_exit, chg_pct, correct, log_date
+            FROM signal_log
+            ORDER BY log_date DESC, ABS(score) DESC
+            LIMIT 30
+        """)
+        recent = cur.fetchall()
+
+        cur.close(); conn.close()
+
+        total = overall["total"] or 0
+        hits  = overall["hits"]  or 0
+        pct   = round(hits/total*100,1) if total else 0
+
+        # Build HTML
+        rows_html = ""
+        for r in recent:
+            result_icon = "✅" if r["correct"] else ("❌" if r["correct"] is False else "⏳")
+            chg_color   = "#4ade80" if (r["chg_pct"] or 0) > 0 else "#f87171"
+            score_color = "#4ade80" if (r["score"] or 0) > 0 else "#f87171"
+            rows_html += f"""
+            <tr>
+              <td>{r['log_date']}</td>
+              <td style="font-weight:700;color:#fff">{r['sym']}</td>
+              <td style="color:#7dd3fc">{r['event_id']}</td>
+              <td style="color:{score_color}">{'+' if (r['score'] or 0)>0 else ''}{r['score']}</td>
+              <td>{r['dir']}</td>
+              <td style="color:#60a5fa">{r['rsi'] or '—'}</td>
+              <td>${r['price_entry'] or '—'}</td>
+              <td>${r['price_exit'] or '⏳'}</td>
+              <td style="color:{chg_color}">{('+' if (r['chg_pct'] or 0)>0 else '') + str(r['chg_pct']) + '%' if r['chg_pct'] is not None else '⏳'}</td>
+              <td style="font-size:16px">{result_icon}</td>
+            </tr>"""
+
+        event_rows = ""
+        for e in by_event:
+            acc = round(e['hits']/e['total']*100,1) if e['total'] else 0
+            bar_color = "#4ade80" if acc >= 60 else "#f87171" if acc < 40 else "#F59E0B"
+            event_rows += f"""
+            <tr>
+              <td style="color:#7dd3fc">{e['event_id']}</td>
+              <td>{e['total']}</td>
+              <td>{e['hits']}</td>
+              <td style="color:{bar_color};font-weight:700">{acc}%</td>
+              <td style="color:{'#4ade80' if (e['avg_chg'] or 0)>0 else '#f87171'}">{e['avg_chg'] or 0}%</td>
+            </tr>"""
+
+        acc_color = "#4ade80" if pct >= 60 else "#f87171" if pct < 40 else "#F59E0B"
+
+        html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DEMAND SIGNAL · STATUS</title>
+<style>
+  * {{ box-sizing:border-box; margin:0; padding:0; }}
+  body {{ background:#15406 0; color:#e2e8f0; font-family:'Inter',system-ui,sans-serif; padding:20px; }}
+  h1 {{ font-size:14px; letter-spacing:3px; color:#7dd3fc; margin-bottom:4px; }}
+  .sub {{ font-size:10px; color:#4a8aaa; letter-spacing:2px; margin-bottom:24px; }}
+  .cards {{ display:flex; gap:12px; margin-bottom:24px; flex-wrap:wrap; }}
+  .card {{ background:#112f4e; border:1px solid #1e527a; border-radius:8px; padding:16px 20px; min-width:140px; }}
+  .card .val {{ font-size:28px; font-weight:800; font-family:monospace; }}
+  .card .lbl {{ font-size:9px; color:#4a8aaa; letter-spacing:2px; margin-top:4px; }}
+  h2 {{ font-size:10px; color:#4a8aaa; letter-spacing:3px; margin-bottom:10px; }}
+  table {{ width:100%; border-collapse:collapse; font-size:11px; margin-bottom:28px; }}
+  th {{ text-align:left; font-size:8px; color:#4a8aaa; letter-spacing:2px; padding:6px 8px; border-bottom:1px solid #1e527a; }}
+  td {{ padding:7px 8px; border-bottom:1px solid #0f2a42; color:#94a3b8; }}
+  tr:hover td {{ background:#0f2a42; }}
+  a {{ color:#7dd3fc; text-decoration:none; font-size:10px; }}
+  ::-webkit-scrollbar {{ width:2px; }} ::-webkit-scrollbar-thumb {{ background:#1e527a; }}
+</style></head><body>
+<h1>DEMAND SIGNAL · STATUS</h1>
+<div class="sub">PREDICCIONES · RESULTADOS · APRENDIZAJE</div>
+<div class="cards">
+  <div class="card"><div class="val" style="color:{acc_color}">{pct}%</div><div class="lbl">ACCURACY GLOBAL</div></div>
+  <div class="card"><div class="val" style="color:#fff">{total}</div><div class="lbl">PREDICCIONES TOTALES</div></div>
+  <div class="card"><div class="val" style="color:#4ade80">{hits}</div><div class="lbl">ACIERTOS</div></div>
+  <div class="card"><div class="val" style="color:#f87171">{total-hits}</div><div class="lbl">ERRORES</div></div>
+</div>
+<h2>ACCURACY POR EPISODIO</h2>
+<table><thead><tr><th>EPISODIO</th><th>SEÑALES</th><th>ACIERTOS</th><th>ACCURACY</th><th>AVG CHG%</th></tr></thead>
+<tbody>{event_rows if event_rows else '<tr><td colspan="5" style="color:#4a8aaa;padding:20px">Sin datos todavía — se registran señales diariamente</td></tr>'}</tbody></table>
+<h2>SEÑALES RECIENTES</h2>
+<table><thead><tr><th>FECHA</th><th>TICKER</th><th>EPISODIO</th><th>SCORE</th><th>DIR</th><th>RSI</th><th>ENTRADA</th><th>SALIDA</th><th>CHG%</th><th>OK</th></tr></thead>
+<tbody>{rows_html if rows_html else '<tr><td colspan="10" style="color:#4a8aaa;padding:20px">Sin señales registradas aún · <a href="/api/log" onclick="fetch(this.href,{{method:\'POST\'}});return false">Registrar ahora</a></td></tr>'}</tbody></table>
+<div style="font-size:9px;color:#1e527a;margin-top:12px">Auto-registra las top 10 señales del día · Evalúa resultado al día siguiente · <a href="/">← Dashboard</a></div>
+</body></html>"""
+        return html
+    except Exception as e:
+        return f"<pre style='color:red;background:#000;padding:20px'>Error: {e}</pre>", 500
+
 if __name__ == "__main__":
+    init_db()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
+# Init DB on startup
+try:
+    init_db()
+except:
+    pass
