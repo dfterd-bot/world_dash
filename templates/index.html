@@ -462,12 +462,28 @@ function renderHot() {
   if (hmEl) hmEl.innerHTML = "";
 }
 
+// ── SORTED EVENTS BY INTENSITY ───────────────────────────────────────────────
+function eventsSortedByIntensity() {
+  return [...EVENTS].sort((a,b) => {
+    const ia = aiCache[a.id]?.eventIntensity ?? INTENSITY_FALLBACK[a.id] ?? 0;
+    const ib = aiCache[b.id]?.eventIntensity ?? INTENSITY_FALLBACK[b.id] ?? 0;
+    return ib - ia;
+  });
+}
+
+const INTENSITY_FALLBACK = {
+  HEATWAVE:40, HURRICANE:35, DROUGHT:30, FLOOD:30,
+  PANDEMIC:45, FLU:35, HORMUZ:55, TAIWAN:60,
+  NATO:50, AI_BOOM:70, CYBER:50, SUPERBOWL:40, BTS:35,
+};
+
 // ── RENDER ────────────────────────────────────────────────────────────────────
 function renderSidebar() {
   let html="";
+  const sorted = eventsSortedByIntensity();
   for(const [cat,meta] of Object.entries(CAT)){
     html+=`<div class="cat-hdr"><span>${meta.dot}</span><span class="cat-lbl" style="color:${meta.color}">${meta.label}</span></div>`;
-    for(const ev of EVENTS.filter(e=>e.cat===cat)){
+    for(const ev of sorted.filter(e=>e.cat===cat)){
       const isA=ev.id===activeId, eAI=aiCache[ev.id];
       const sig=eAI?.signal;
       const bc=sig==="ACTIVE"?"#EF4444":sig==="ELEVATED"?"#F59E0B":"#10B981";
@@ -485,8 +501,11 @@ function renderMobilePills() {
   document.getElementById("mobile-pills").style.display="block";
   const isHot = activeId==="HOT";
   let html=`<span onclick="switchEvent('HOT')" style="display:inline-block;margin-right:5px;padding:4px 9px;border-radius:12px;font-size:9px;cursor:pointer;font-weight:${isHot?700:400};background:${isHot?"#F59E0B22":"#111"};color:${isHot?"#F59E0B":"#555"};border:1px solid ${isHot?"#F59E0B":"#222"}">🔥 HOT</span>`;
-  for(const [cat,meta] of Object.entries(CAT)){
-    for(const ev of EVENTS.filter(e=>e.cat===cat)){
+  const sortedPills = eventsSortedByIntensity();
+  for(const ev of sortedPills){
+    const meta=CAT[ev.cat];
+    {
+      const isA=ev.id===activeId;
       const isA=ev.id===activeId;
       html+=`<span onclick="switchEvent('${ev.id}')" style="display:inline-block;margin-right:5px;padding:4px 9px;border-radius:12px;font-size:9px;cursor:pointer;letter-spacing:1px;font-weight:${isA?700:400};background:${isA?meta.color+"22":"#111"};color:${isA?meta.color:"#555"};border:1px solid ${isA?meta.color:"#222"}">${meta.dot} ${ev.label}</span>`;
     }
@@ -502,7 +521,8 @@ function renderTabs() {
     <span class="tab-num" style="color:${isHot?"#F59E0B":"#2a2a2a"}">🔥</span>
     <span class="tab-name" style="color:${isHot?"#F59E0B":"#2a2a2a"}">HOT</span>
   </button>`;
-  EVENTS.forEach((ev,i)=>{
+  const sortedEvs = eventsSortedByIntensity();
+  sortedEvs.forEach((ev,i)=>{
     const meta=CAT[ev.cat], isA=ev.id===activeId, eAI=aiCache[ev.id];
     html+=`<button class="tab-btn${isA?" active":""}" onclick="switchEvent('${ev.id}')" style="border-top-color:${isA?meta.color:"transparent"}">
       <span class="tab-num">${i+1}</span>
