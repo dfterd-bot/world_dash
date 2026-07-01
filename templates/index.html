@@ -753,21 +753,22 @@ async function refreshRSI() {
 
 // ── FULL RENDER ───────────────────────────────────────────────────────────────
 function render(loadingAI, error) {
+  // Guard: HOT
   if (activeId === "HOT") {
     renderSidebar(); renderTabs(); renderMobilePills(); updateMarket();
-    const mi = document.getElementById("main-inner");
-    if (mi) { mi.innerHTML = ""; }
-    const tm = document.getElementById("top-movers"); if (tm) tm.innerHTML = "";
-    const hm = document.getElementById("heatmap"); if (hm) hm.innerHTML = "";
-    if (hotCache) renderHot();
-    else if (!hotRunning) fetchHotTickers();
+    const mi=document.getElementById("main-inner"); if(mi) mi.innerHTML="";
+    const tm=document.getElementById("top-movers"); if(tm) tm.innerHTML="";
+    const hm=document.getElementById("heatmap"); if(hm) hm.innerHTML="";
+    if (hotCache) renderHot(); else if (!hotRunning) fetchHotTickers();
     return;
   }
+  // Guard: OVERVIEW
   if (activeId === "OVERVIEW") {
     renderSidebar(); renderTabs(); renderMobilePills(); updateMarket();
     renderOverview();
     return;
   }
+
   const event=EVENTS.find(e=>e.id===activeId);
   const ai=aiCache[activeId];
   renderSidebar();
@@ -785,8 +786,17 @@ function render(loadingAI, error) {
 // ── ACTIONS ───────────────────────────────────────────────────────────────────
 function switchEvent(id) {
   activeId=id;
+  if (id === "HOT") {
+    render(false, null);
+    fetchHotTickers();
+    return;
+  }
+  if (id === "OVERVIEW") {
+    render(false, null);
+    return;
+  }
   render(aiRunning, null);
-  runAI(true); // always force on switch
+  runAI(false);
 }
 
 async function runAI(force) {
