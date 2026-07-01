@@ -280,6 +280,86 @@ def score(event_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/hot")
+def hot():
+    """Returns top 4 tickers ranked by RSI extremity across all events"""
+    try:
+        UNIVERSE = {
+            "HEATWAVE":  [("LONG",["CEG","VST","NRG","AES","ETR","LNG","EQT","AR","LII","CARR"]),("WATCH",["NEE","DUK","SO","AEP"])],
+            "HURRICANE": [("LONG",["GNRC","HD","LOW","SHW","MLM","VMC","MPC","VLO"]),("SHORT",["RE","RNR","MKL"])],
+            "DROUGHT":   [("LONG",["MOS","NTR","CF","ICL","CTVA","FMC","AWK","WTRG"]),("SHORT",["CPB","SJM","CAG","MKC"])],
+            "FLOOD":     [("LONG",["XYL","AWK","VMC","MLM","NUE"]),("SHORT",["ALL","TRV","CB","HIG"])],
+            "PANDEMIC":  [("LONG",["MRNA","PFE","BNTX","NVAX","QDEL","BDX","DHR","TMO"]),("SHORT",["UAL","DAL","MAR","HLT"])],
+            "FLU":       [("LONG",["GILD","ABBV","JNJ","MRK","CVS","WBA"]),("WATCH",["HCA","THC"])],
+            "HORMUZ":    [("LONG",["XOM","CVX","OXY","COP","EOG","SLB","HAL","BKR"]),("SHORT",["UAL","DAL","AAL"]),("WATCH",["ZIM","MATX"])],
+            "TAIWAN":    [("LONG",["LMT","RTX","NOC","GD","HII","GLD","IAU","NEM"]),("SHORT",["NVDA","AMD","AMAT","LRCX","AAPL"])],
+            "NATO":      [("LONG",["LMT","RTX","NOC","XOM","CVX","LNG","GLD","TLT"]),("SHORT",["SPY","QQQ","IWM"])],
+            "AI_BOOM":   [("LONG",["NVDA","AMD","AVGO","MRVL","CEG","VST","VRT","SMCI","CIEN","CSCO"])],
+            "CYBER":     [("LONG",["CRWD","PANW","ZS","FTNT","S","LDOS","SAIC","BAH"]),("SHORT",["JPM","BAC","NEE"])],
+            "SUPERBOWL": [("LONG",["PEP","KO","TAP","NFLX","META","TTD","DASH","UBER"]),("WATCH",["WMT","TGT"])],
+            "BTS":       [("LONG",["WMT","TGT","AMZN","AAPL","DELL","HPQ","UPS","FDX"]),("WATCH",["NKE","PVH"])],
+        }
+
+        # Build dedup universe
+        universe = {}
+        for ev_id, secs in UNIVERSE.items():
+            for dir_, tickers in secs:
+                for sym in tickers:
+                    if sym not in universe:
+                        universe[sym] = {"sym": sym, "dir": dir_, "event": ev_id}
+
+        # Fetch price + calc RSI for all
+        import concurrent.futures
+
+        def fetch_ticker(item):
+            sym, t = item
+            try:
+                data = fetch_price(sym)
+                result = data["chart"]["result"][0]
+                closes = [c for c in result.get("indicators",{}).get("quote",[{}])[0].get("close",[]) if c]
+                meta = result["meta"]
+                prev = meta.get("_prevClose") or (closes[-2] if len(closes)>=2 else None) or meta.get("regularMarketPrice")
+                price = meta.get("regularMarketPrice")
+                chg = round((price-prev)/prev*100, 2) if prev and price else 0
+                # RSI
+                rsi = None
+                if len(closes) >= 15:
+                    gains = losses = 0
+                    for i in range(1,15):
+                        d = closes[i]-closes[i-1]
+                        if d>0: gains+=d
+                        else: losses+=abs(d)
+                    ag,al = gains/14, losses/14
+                    for i in range(15, len(closes)):
+                        d = closes[i]-closes[i-1]
+                        ag = (ag*13+(d if d>0 else 0))/14
+                        al = (al*13+(abs(d) if d<0 else 0))/14
+                    rsi = round(100-(100/(1+ag/al)),1) if al else 100
+                t["rsi"] = rsi
+                t["price"] = price
+                t["chg"] = chg
+                t["session"] = meta.get("_sessionLabel","CLOSED")
+                return t
+            except:
+                return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as ex:
+            results = list(ex.map(fetch_ticker, universe.items()))
+
+        valid = [r for r in results if r and r.get("rsi") is not None]
+
+        # Score by RSI extremity
+        for t in valid:
+            if t["dir"] == "LONG":  t["rsiScore"] = 100 - t["rsi"]
+            elif t["dir"] == "SHORT": t["rsiScore"] = t["rsi"]
+            else: t["rsiScore"] = abs(t["rsi"] - 50)
+
+        top4 = sorted(valid, key=lambda x: x["rsiScore"], reverse=True)[:4]
+
+        return jsonify({"tickers": top4, "total_scanned": len(valid)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/log", methods=["POST"])
 def trigger_log():
     log_signals()
