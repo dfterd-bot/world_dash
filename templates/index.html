@@ -479,60 +479,38 @@ const INTENSITY_FALLBACK = {
 
 // ── OVERVIEW RENDER ──────────────────────────────────────────────────────────
 function renderOverview() {
-  const sorted = eventsSortedByIntensity();
   const mi = document.getElementById("main-inner");
   if (!mi) return;
+  const sorted = eventsSortedByIntensity();
 
-  let html = `
-    <div style="padding-bottom:12px;margin-bottom:14px;border-bottom:1px solid #1e527a22">
-      <div style="font-size:8px;color:#4a8aaa;letter-spacing:3px;margin-bottom:3px">DEMAND SIGNAL</div>
-      <div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:2px">Vista General</div>
-      <div style="font-size:10px;color:#4a8aaa">Episodios rankeados por intensidad · click para ver detalle</div>
-    </div>`;
+  let html = `<div style="padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid #1e527a33">
+    <div style="font-size:8px;color:#4a8aaa;letter-spacing:3px;margin-bottom:2px">TODOS LOS EPISODIOS</div>
+    <div style="font-size:13px;font-weight:700;color:#fff">Vista General · Mayor a Menor Intensidad</div>
+  </div>`;
 
   for (const ev of sorted) {
-    const meta   = CAT[ev.cat];
-    const ai     = aiCache[ev.id];
-    const intensity = ai?.eventIntensity ?? INTENSITY_FALLBACK[ev.id] ?? 0;
-    const signal = ai?.signal ?? (intensity>=70?"ACTIVE":intensity>=45?"ELEVATED":"QUIET");
-    const sc = signal==="ACTIVE"?"#EF4444":signal==="ELEVATED"?"#F59E0B":"#10B981";
-    const iCol = intensity>=70?"#EF4444":intensity>=40?"#F59E0B":"#10B981";
-    const isActive = ev.id === activeId;
-
-    // Collect tickers from sectors
-    const allTickers = ev.sectors ? ev.sectors.flatMap(s => {
-      const dirColor = {LONG:"#4ade80",SHORT:"#f87171",WATCH:"#F59E0B"}[s.dir]??"#aaa";
-      return s.tickers.slice(0,3).map(sym => {
-        const sc_val = aiCache[ev.id]?.sectors?.find(x=>x.name===s.name)?.tickers?.find(t=>t.sym===sym)?.score;
-        const rd = rsiCache[sym];
-        return {sym, dir:s.dir, dirColor, score:sc_val, rsi:rd?.rsi};
-      });
-    }) : [];
+    const meta      = CAT[ev.cat];
+    const intensity = aiCache[ev.id]?.eventIntensity ?? INTENSITY_FALLBACK[ev.id] ?? 0;
+    const iCol      = intensity>=70?"#EF4444":intensity>=40?"#F59E0B":"#10B981";
+    const tickers   = ev.sectors ? [...new Set(ev.sectors.flatMap(s=>s.tickers))] : [];
 
     html += `
-    <div onclick="switchEvent('${ev.id}')" style="background:${isActive?"#1a4060":"#112f4e"};border:1px solid ${isActive?"#3B82F6":"#1e527a"};border-left:3px solid ${meta.color};border-radius:6px;padding:12px 14px;margin-bottom:8px;cursor:pointer;transition:all 0.2s"
-      onmouseover="this.style.background='#1a4060'" onmouseout="this.style.background='${isActive?"#1a4060":"#112f4e"}'">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-        <div style="display:flex;align-items:center;gap:8px">
-          <span style="font-size:12px">${meta.dot}</span>
-          <span style="font-size:12px;font-weight:700;color:#fff">${ev.label}</span>
-          <span style="font-size:8px;color:${meta.color};letter-spacing:2px">${meta.label}</span>
+    <div onclick="switchEvent('${ev.id}')" style="margin-bottom:10px;padding:10px 12px;background:#112f4e;border:1px solid #1e527a;border-left:3px solid ${meta.color};border-radius:5px;cursor:pointer"
+      onmouseover="this.style.background='#1a3d5c'" onmouseout="this.style.background='#112f4e'">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:7px">
+          <span>${meta.dot}</span>
+          <span style="font-size:11px;font-weight:700;color:#fff">${ev.label}</span>
+          <span style="font-size:8px;color:${meta.color};letter-spacing:1px">${meta.label}</span>
         </div>
-        <div style="display:flex;align-items:center;gap:8px">
-          <span style="font-size:8px;padding:2px 6px;border-radius:2px;background:${sc}22;color:${sc};letter-spacing:1px;font-weight:700">${signal}</span>
-          <span style="font-size:18px;font-weight:800;font-family:monospace;color:${iCol}">${intensity}</span>
-        </div>
+        <span style="font-size:16px;font-weight:800;font-family:monospace;color:${iCol}">${intensity}</span>
       </div>
-      <div style="height:2px;background:#0f2a42;border-radius:2px;margin-bottom:8px;overflow:hidden">
-        <div style="height:100%;width:${intensity}%;background:${iCol};transition:width 1s ease"></div>
+      <div style="height:3px;background:#0f2a42;border-radius:2px;margin-bottom:7px;overflow:hidden">
+        <div style="height:100%;width:${intensity}%;background:${iCol};border-radius:2px"></div>
       </div>
-      <div style="display:flex;gap:5px;flex-wrap:wrap">
-        ${allTickers.slice(0,8).map(t => {
-          const rsiTag = t.rsi!=null&&t.rsi<=35?"🔵":t.rsi!=null&&t.rsi>=65?"🟡":"";
-          const scColor = t.score!=null?(t.score>0?"#4ade80":"#f87171"):"#94a3b8";
-          return `<span style="font-family:monospace;font-size:9px;font-weight:700;padding:2px 6px;border-radius:2px;background:${t.dirColor}14;color:${t.dirColor};border:1px solid ${t.dirColor}30">${rsiTag}${t.sym}${t.score!=null?" "+(t.score>0?"+":"")+t.score:""}</span>`;
-        }).join("")}
-        ${allTickers.length>8?`<span style="font-size:9px;color:#4a8aaa">+${allTickers.length-8} más</span>`:""}
+      <div style="display:flex;gap:4px;flex-wrap:wrap">
+        ${tickers.slice(0,10).map(sym=>`<span style="font-family:monospace;font-size:9px;color:#94a3b8;background:#0f2a42;padding:1px 5px;border-radius:2px">${sym}</span>`).join("")}
+        ${tickers.length>10?`<span style="font-size:9px;color:#4a8aaa">+${tickers.length-10}</span>`:""}
       </div>
     </div>`;
   }
