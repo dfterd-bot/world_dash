@@ -121,7 +121,7 @@ RSS_FEEDS = [
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def fetch_price(symbol):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=5d"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=30d"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=8) as r:
         data = json.loads(r.read())
