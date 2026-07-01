@@ -217,6 +217,23 @@ const EVENTS = [
   { id:"BTS",       cat:"CONSUMO", label:"Back to School",  desc:"Temporada de alta demanda de consumo masivo",                 demandLogic:"Seasonal spending surge drives electronics apparel and logistics demand", sectors:["Retail","Consumer Electronics","Logistics","Apparel"] },
 ];
 
+// ── CLIENT SECTOR MAP ────────────────────────────────────────────────────────
+const SECTOR_MAP_CLIENT = {
+  HEATWAVE:  [{name:"Power Generation",dir:"LONG",tickers:["CEG","VST","NRG","AES","ETR"]},{name:"Natural Gas",dir:"LONG",tickers:["LNG","EQT","AR","SWN"]},{name:"HVAC",dir:"LONG",tickers:["LII","CARR","TT"]},{name:"Utilities",dir:"WATCH",tickers:["NEE","DUK","SO","AEP"]}],
+  HURRICANE: [{name:"Generators",dir:"LONG",tickers:["GNRC","SHYF","POWI"]},{name:"Construction",dir:"LONG",tickers:["HD","LOW","SHW","MLM","VMC"]},{name:"Refiners",dir:"LONG",tickers:["MPC","VLO","PSX"]},{name:"Insurance",dir:"SHORT",tickers:["RE","RNR","MKL"]}],
+  DROUGHT:   [{name:"Fertilizers",dir:"LONG",tickers:["MOS","NTR","CF","ICL"]},{name:"Agro Seeds",dir:"LONG",tickers:["CTVA","FMC"]},{name:"Water",dir:"LONG",tickers:["AWK","WTRG","CWT"]},{name:"Food Processing",dir:"SHORT",tickers:["CPB","SJM","CAG","MKC"]}],
+  FLOOD:     [{name:"Water Infra",dir:"LONG",tickers:["XYL","AWK"]},{name:"Construction",dir:"LONG",tickers:["VMC","MLM","NUE"]},{name:"Insurance",dir:"SHORT",tickers:["ALL","TRV","CB","HIG"]},{name:"Agro",dir:"WATCH",tickers:["ADM","BG","INGR"]}],
+  PANDEMIC:  [{name:"Vaccines",dir:"LONG",tickers:["MRNA","PFE","BNTX","NVAX"]},{name:"Diagnostics",dir:"LONG",tickers:["QDEL","BDX","DHR","TMO"]},{name:"Medical",dir:"LONG",tickers:["MMM","HOLX"]},{name:"Airlines",dir:"SHORT",tickers:["UAL","DAL","MAR","HLT"]}],
+  FLU:       [{name:"Antivirals",dir:"LONG",tickers:["GILD","ABBV","JNJ","MRK"]},{name:"Diagnostics",dir:"LONG",tickers:["QDEL","BDX"]},{name:"Pharmacy",dir:"LONG",tickers:["CVS","WBA"]},{name:"Hospitals",dir:"WATCH",tickers:["HCA","THC","CYH"]}],
+  HORMUZ:    [{name:"Oil E&P",dir:"LONG",tickers:["XOM","CVX","OXY","COP","EOG"]},{name:"Oilfield",dir:"LONG",tickers:["SLB","HAL","BKR"]},{name:"Airlines",dir:"SHORT",tickers:["UAL","DAL","AAL"]},{name:"Shipping",dir:"WATCH",tickers:["ZIM","MATX","STNG"]}],
+  TAIWAN:    [{name:"Defense",dir:"LONG",tickers:["LMT","RTX","NOC","GD","HII"]},{name:"Gold",dir:"LONG",tickers:["GLD","IAU","NEM","GOLD"]},{name:"Semis",dir:"SHORT",tickers:["NVDA","AMD","AMAT","LRCX"]},{name:"Consumer",dir:"SHORT",tickers:["AAPL","AMZN","WMT"]}],
+  NATO:      [{name:"Defense",dir:"LONG",tickers:["LMT","RTX","NOC","GD","LDOS"]},{name:"Energy",dir:"LONG",tickers:["XOM","CVX","LNG","CQP"]},{name:"Safe Haven",dir:"LONG",tickers:["GLD","TLT","IAU"]},{name:"Risk-Off",dir:"SHORT",tickers:["SPY","QQQ","IWM"]}],
+  AI_BOOM:   [{name:"AI Chips",dir:"LONG",tickers:["NVDA","AMD","AVGO","MRVL"]},{name:"DC Power",dir:"LONG",tickers:["CEG","VST","ETR","NRG"]},{name:"Cooling",dir:"LONG",tickers:["VRT","SMCI"]},{name:"Fiber",dir:"LONG",tickers:["CIEN","CSCO","JNPR"]}],
+  CYBER:     [{name:"Cybersec",dir:"LONG",tickers:["CRWD","PANW","ZS","FTNT","S"]},{name:"Defense IT",dir:"LONG",tickers:["LDOS","SAIC","BAH","CACI"]},{name:"Banks",dir:"SHORT",tickers:["JPM","BAC"]},{name:"Utilities",dir:"SHORT",tickers:["NEE","DUK"]}],
+  SUPERBOWL: [{name:"Beverages",dir:"LONG",tickers:["PEP","KO","TAP","STZ"]},{name:"Streaming",dir:"LONG",tickers:["NFLX","GOOGL","META","TTD"]},{name:"Delivery",dir:"LONG",tickers:["DASH","UBER"]},{name:"Retail",dir:"WATCH",tickers:["WMT","TGT","COST"]}],
+  BTS:       [{name:"Retail",dir:"LONG",tickers:["WMT","TGT","AMZN","COST"]},{name:"Electronics",dir:"LONG",tickers:["AAPL","DELL","HPQ","BBY"]},{name:"Logistics",dir:"LONG",tickers:["UPS","FDX"]},{name:"Apparel",dir:"WATCH",tickers:["NKE","PVH","RL"]}],
+};
+
 // ── HOT STATE ────────────────────────────────────────────────────────────────
 let hotCache = null;
 let hotRunning = false;
@@ -492,7 +509,7 @@ function renderOverview() {
     const meta      = CAT[ev.cat];
     const intensity = aiCache[ev.id]?.eventIntensity ?? INTENSITY_FALLBACK[ev.id] ?? 0;
     const iCol      = intensity>=70?"#EF4444":intensity>=40?"#F59E0B":"#10B981";
-    const tickers   = ev.sectors ? [...new Set(ev.sectors.flatMap(s=>s.tickers))] : [];
+    // tickers rendered from SECTOR_MAP_CLIENT below
 
     html += `
     <div onclick="switchEvent('${ev.id}')" style="margin-bottom:10px;padding:10px 12px;background:#112f4e;border:1px solid #1e527a;border-left:3px solid ${meta.color};border-radius:5px;cursor:pointer"
@@ -509,13 +526,13 @@ function renderOverview() {
         <div style="height:100%;width:${intensity}%;background:${iCol};border-radius:2px"></div>
       </div>
       <div style="display:flex;gap:4px;flex-wrap:wrap">
-        ${ev.sectors ? ev.sectors.flatMap(s => {
+        ${(SECTOR_MAP_CLIENT[ev.id]||[]).flatMap(s => {
           const arrow = s.dir==="LONG" ? "▲" : s.dir==="SHORT" ? "▼" : "◈";
           const col   = s.dir==="LONG" ? "#4ade80" : s.dir==="SHORT" ? "#f87171" : "#F59E0B";
-          return s.tickers.slice(0,4).map(sym =>
+          return s.tickers.slice(0,3).map(sym =>
             `<span style="font-family:monospace;font-size:9px;color:${col};background:#0f2a42;padding:1px 5px;border-radius:2px;border:1px solid ${col}22">${arrow} ${sym}</span>`
           );
-        }).slice(0,12).join("") : ""}
+        }).slice(0,12).join("")}
       </div>
     </div>`;
   }
