@@ -609,6 +609,8 @@ function renderTabs() {
 }
 
 function renderEventHeader(event, ai) {
+  const el = document.getElementById("ev-hdr");
+  if (!el) return;
   const meta=CAT[event.cat];
   let html=`<div style="display:flex;justify-content:space-between;align-items:flex-start">
     <div style="flex:1">
@@ -624,12 +626,13 @@ function renderEventHeader(event, ai) {
     html+=`<div class="int-row"><span class="int-lbl">INTENSIDAD</span><div class="int-bar-wrap"><div class="int-bar" style="width:${ai.eventIntensity}%;background:${iCol(ai.eventIntensity)}"></div></div><span class="sig-badge" style="background:${sc}22;color:${sc};font-size:8px;padding:2px 6px">${ai.signal}</span></div>`;
   }
   if(ai?.lastSignal) html+=`<div class="last-sig">› ${ai.lastSignal}</div>`;
-  document.getElementById("ev-hdr").innerHTML=html;
-  document.getElementById("ev-hdr").style.borderBottomColor=meta.color+"18";
+  el.innerHTML=html;
+  el.style.borderBottomColor=meta.color+"18";
 }
 
 function renderLoading() {
-  document.getElementById("ev-hdr").insertAdjacentHTML("beforeend",
+  const evHdr = document.getElementById("ev-hdr"); if(!evHdr) return;
+  evHdr.insertAdjacentHTML("beforeend",
     `<div class="ai-loading" id="ai-load-ind">
       <div class="ai-dot" style="animation:blink 1.2s ease 0s infinite"></div>
       <div class="ai-dot" style="animation:blink 1.2s ease 0.2s infinite"></div>
@@ -641,7 +644,8 @@ function renderLoading() {
 }
 
 function renderError(msg) {
-  document.getElementById("ev-hdr").insertAdjacentHTML("beforeend",
+  const evHdr = document.getElementById("ev-hdr"); if(!evHdr) return;
+  evHdr.insertAdjacentHTML("beforeend",
     `<div class="err-row"><span class="err-txt">⚠ ${msg}</span><button class="retry-btn" onclick="scan(true)">REINTENTAR</button></div>`);
   const sl=document.getElementById("scan-lbl");
   if(sl) sl.style.display="none";
