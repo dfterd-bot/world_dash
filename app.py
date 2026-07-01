@@ -314,14 +314,19 @@ def hot():
         def fetch_ticker(item):
             sym, t = item
             try:
-                data = fetch_price(sym)
+                import urllib.request as ur, json as js
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=30d"
+                req2 = ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with ur.urlopen(req2, timeout=8) as r:
+                    data = js.loads(r.read())
                 result = data["chart"]["result"][0]
-                closes = [c for c in result.get("indicators",{}).get("quote",[{}])[0].get("close",[]) if c]
+                closes = [c for c in result.get("indicators",{}).get("quote",[{}])[0].get("close",[]) if c is not None]
                 meta = result["meta"]
-                prev = meta.get("_prevClose") or (closes[-2] if len(closes)>=2 else None) or meta.get("regularMarketPrice")
+                prev = closes[-2] if len(closes)>=2 else meta.get("regularMarketPreviousClose") or meta.get("chartPreviousClose")
                 price = meta.get("regularMarketPrice")
-                chg = round((price-prev)/prev*100, 2) if prev and price else 0
-                # RSI
+                if not price or not closes: return None
+                chg = round((price-prev)/prev*100, 2) if prev else 0
+                # RSI(14)
                 rsi = None
                 if len(closes) >= 15:
                     gains = losses = 0
@@ -335,11 +340,11 @@ def hot():
                         ag = (ag*13+(d if d>0 else 0))/14
                         al = (al*13+(abs(d) if d<0 else 0))/14
                     rsi = round(100-(100/(1+ag/al)),1) if al else 100
-                t["rsi"] = rsi
-                t["price"] = price
-                t["chg"] = chg
-                t["session"] = meta.get("_sessionLabel","CLOSED")
-                return t
+                state = meta.get("marketState","CLOSED")
+                session = {"REGULAR":"LIVE","PRE":"PRE","POST":"POST","POSTPOST":"POST"}.get(state,"CLOSED")
+                t2 = dict(t)
+                t2.update({"rsi":rsi,"price":price,"chg":chg,"session":session})
+                return t2
             except:
                 return None
 
