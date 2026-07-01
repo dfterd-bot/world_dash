@@ -292,7 +292,7 @@ const CAT = {
 const SCORE_MAP = ["HEATWAVE","HURRICANE","DROUGHT","FLOOD","PANDEMIC","FLU","HORMUZ","TAIWAN","NATO","AI_BOOM","CYBER","SUPERBOWL","BTS"];
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
-let activeId  = "HORMUZ";
+let activeId  = "OVERVIEW";
 let aiCache   = {};      // { [eventId]: { sectors:[{name,dir,tickers:[{sym,score,reason}]}], ... } }
 let rsiCache  = {};      // { [sym]: { rsi, price, chg, session, ts } }
 let aiRunning = false;
@@ -477,6 +477,72 @@ const INTENSITY_FALLBACK = {
   NATO:50, AI_BOOM:70, CYBER:50, SUPERBOWL:40, BTS:35,
 };
 
+// ── OVERVIEW RENDER ──────────────────────────────────────────────────────────
+function renderOverview() {
+  const sorted = eventsSortedByIntensity();
+  const mi = document.getElementById("main-inner");
+  if (!mi) return;
+
+  let html = `
+    <div style="padding-bottom:12px;margin-bottom:14px;border-bottom:1px solid #1e527a22">
+      <div style="font-size:8px;color:#4a8aaa;letter-spacing:3px;margin-bottom:3px">DEMAND SIGNAL</div>
+      <div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:2px">Vista General</div>
+      <div style="font-size:10px;color:#4a8aaa">Episodios rankeados por intensidad · click para ver detalle</div>
+    </div>`;
+
+  for (const ev of sorted) {
+    const meta   = CAT[ev.cat];
+    const ai     = aiCache[ev.id];
+    const intensity = ai?.eventIntensity ?? INTENSITY_FALLBACK[ev.id] ?? 0;
+    const signal = ai?.signal ?? (intensity>=70?"ACTIVE":intensity>=45?"ELEVATED":"QUIET");
+    const sc = signal==="ACTIVE"?"#EF4444":signal==="ELEVATED"?"#F59E0B":"#10B981";
+    const iCol = intensity>=70?"#EF4444":intensity>=40?"#F59E0B":"#10B981";
+    const isActive = ev.id === activeId;
+
+    // Collect tickers from sectors
+    const allTickers = ev.sectors ? ev.sectors.flatMap(s => {
+      const dirColor = {LONG:"#4ade80",SHORT:"#f87171",WATCH:"#F59E0B"}[s.dir]??"#aaa";
+      return s.tickers.slice(0,3).map(sym => {
+        const sc_val = aiCache[ev.id]?.sectors?.find(x=>x.name===s.name)?.tickers?.find(t=>t.sym===sym)?.score;
+        const rd = rsiCache[sym];
+        return {sym, dir:s.dir, dirColor, score:sc_val, rsi:rd?.rsi};
+      });
+    }) : [];
+
+    html += `
+    <div onclick="switchEvent('${ev.id}')" style="background:${isActive?"#1a4060":"#112f4e"};border:1px solid ${isActive?"#3B82F6":"#1e527a"};border-left:3px solid ${meta.color};border-radius:6px;padding:12px 14px;margin-bottom:8px;cursor:pointer;transition:all 0.2s"
+      onmouseover="this.style.background='#1a4060'" onmouseout="this.style.background='${isActive?"#1a4060":"#112f4e"}'">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:12px">${meta.dot}</span>
+          <span style="font-size:12px;font-weight:700;color:#fff">${ev.label}</span>
+          <span style="font-size:8px;color:${meta.color};letter-spacing:2px">${meta.label}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:8px;padding:2px 6px;border-radius:2px;background:${sc}22;color:${sc};letter-spacing:1px;font-weight:700">${signal}</span>
+          <span style="font-size:18px;font-weight:800;font-family:monospace;color:${iCol}">${intensity}</span>
+        </div>
+      </div>
+      <div style="height:2px;background:#0f2a42;border-radius:2px;margin-bottom:8px;overflow:hidden">
+        <div style="height:100%;width:${intensity}%;background:${iCol};transition:width 1s ease"></div>
+      </div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap">
+        ${allTickers.slice(0,8).map(t => {
+          const rsiTag = t.rsi!=null&&t.rsi<=35?"🔵":t.rsi!=null&&t.rsi>=65?"🟡":"";
+          const scColor = t.score!=null?(t.score>0?"#4ade80":"#f87171"):"#94a3b8";
+          return `<span style="font-family:monospace;font-size:9px;font-weight:700;padding:2px 6px;border-radius:2px;background:${t.dirColor}14;color:${t.dirColor};border:1px solid ${t.dirColor}30">${rsiTag}${t.sym}${t.score!=null?" "+(t.score>0?"+":"")+t.score:""}</span>`;
+        }).join("")}
+        ${allTickers.length>8?`<span style="font-size:9px;color:#4a8aaa">+${allTickers.length-8} más</span>`:""}
+      </div>
+    </div>`;
+  }
+
+  mi.innerHTML = html;
+  document.getElementById("top-movers").innerHTML = "";
+  document.getElementById("heatmap").innerHTML = "";
+  renderWire(null);
+}
+
 // ── RENDER ────────────────────────────────────────────────────────────────────
 function renderSidebar() {
   let html="";
@@ -499,13 +565,14 @@ function renderSidebar() {
 function renderMobilePills() {
   if(window.innerWidth>768){document.getElementById("mobile-pills").style.display="none";return;}
   document.getElementById("mobile-pills").style.display="block";
+  const isOvM = activeId==="OVERVIEW";
   const isHot = activeId==="HOT";
-  let html=`<span onclick="switchEvent('HOT')" style="display:inline-block;margin-right:5px;padding:4px 9px;border-radius:12px;font-size:9px;cursor:pointer;font-weight:${isHot?700:400};background:${isHot?"#F59E0B22":"#111"};color:${isHot?"#F59E0B":"#555"};border:1px solid ${isHot?"#F59E0B":"#222"}">🔥 HOT</span>`;
+  let html=`<span onclick="switchEvent('OVERVIEW')" style="display:inline-block;margin-right:5px;padding:4px 9px;border-radius:12px;font-size:9px;cursor:pointer;font-weight:${isOvM?700:400};background:${isOvM?"#7dd3fc22":"#111"};color:${isOvM?"#7dd3fc":"#555"};border:1px solid ${isOvM?"#7dd3fc":"#222"}">≡ OVERVIEW</span>`;
+  html+=`<span onclick="switchEvent('HOT')" style="display:inline-block;margin-right:5px;padding:4px 9px;border-radius:12px;font-size:9px;cursor:pointer;font-weight:${isHot?700:400};background:${isHot?"#F59E0B22":"#111"};color:${isHot?"#F59E0B":"#555"};border:1px solid ${isHot?"#F59E0B":"#222"}">🔥 HOT</span>`;
   const sortedPills = eventsSortedByIntensity();
   for(const ev of sortedPills){
     const meta=CAT[ev.cat];
     {
-      const isA=ev.id===activeId;
       const isA=ev.id===activeId;
       html+=`<span onclick="switchEvent('${ev.id}')" style="display:inline-block;margin-right:5px;padding:4px 9px;border-radius:12px;font-size:9px;cursor:pointer;letter-spacing:1px;font-weight:${isA?700:400};background:${isA?meta.color+"22":"#111"};color:${isA?meta.color:"#555"};border:1px solid ${isA?meta.color:"#222"}">${meta.dot} ${ev.label}</span>`;
     }
@@ -515,7 +582,13 @@ function renderMobilePills() {
 
 function renderTabs() {
   let html="";
-  // HOT tab first
+  // OVERVIEW tab
+  const isOv = activeId === "OVERVIEW";
+  html+=`<button class="tab-btn${isOv?" active":""}" onclick="switchEvent('OVERVIEW')" style="border-top-color:${isOv?"#7dd3fc":"transparent"}">
+    <span class="tab-num" style="color:${isOv?"#7dd3fc":"#2a2a2a"}">≡</span>
+    <span class="tab-name" style="color:${isOv?"#7dd3fc":"#2a2a2a"}">OVERVIEW</span>
+  </button>`;
+  // HOT tab
   const isHot = activeId === "HOT";
   html+=`<button class="tab-btn${isHot?" active":""}" onclick="switchEvent('HOT')" style="border-top-color:${isHot?"#F59E0B":"transparent"}">
     <span class="tab-num" style="color:${isHot?"#F59E0B":"#2a2a2a"}">🔥</span>
@@ -678,15 +751,17 @@ async function refreshRSI() {
 function render(loadingAI, error) {
   if (activeId === "HOT") {
     renderSidebar(); renderTabs(); renderMobilePills(); updateMarket();
-    // Clear main content area for HOT view
     const mi = document.getElementById("main-inner");
     if (mi) { mi.innerHTML = ""; }
-    const tm = document.getElementById("top-movers");
-    if (tm) tm.innerHTML = "";
-    const hm = document.getElementById("heatmap");
-    if (hm) hm.innerHTML = "";
+    const tm = document.getElementById("top-movers"); if (tm) tm.innerHTML = "";
+    const hm = document.getElementById("heatmap"); if (hm) hm.innerHTML = "";
     if (hotCache) renderHot();
     else if (!hotRunning) fetchHotTickers();
+    return;
+  }
+  if (activeId === "OVERVIEW") {
+    renderSidebar(); renderTabs(); renderMobilePills(); updateMarket();
+    renderOverview();
     return;
   }
   const event=EVENTS.find(e=>e.id===activeId);
