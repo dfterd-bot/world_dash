@@ -650,13 +650,29 @@ async function runAI(force){
   if(sl)sl.style.display="none";
 }
 
-async function scan(force=false){await runAI(force);}
+async function scan(force=false){
+  if(activeId==="OVERVIEW"||activeId==="HOT"){
+    // Switch to first event and scan
+    activeId=eventsSortedByIntensity()[0].id;
+    render(aiRunning,null);
+  }
+  await runAI(force);
+}
 function toggleWire(){document.getElementById("wire")?.classList.toggle("open");}
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
 setInterval(updateMarket,1000);
 setInterval(refreshRSI,60000);
 render(false,null);
+// Auto-load first event in background
+setTimeout(()=>{
+  const first=eventsSortedByIntensity()[0];
+  if(first&&!aiCache[first.id]){
+    const prevId=activeId;
+    activeId=first.id;
+    runAI(false).then(()=>{ activeId=prevId; render(false,null); });
+  }
+},500);
 </script>
 </body>
 </html>
