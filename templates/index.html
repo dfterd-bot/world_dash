@@ -1,1 +1,840 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DEMAND SIGNAL</title>
+<style>
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:#154060; color:#fff; font-family:'Inter',system-ui,sans-serif; height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+@keyframes fadeIn { from{opacity:0;transform:translateY(3px)} to{opacity:1;transform:translateY(0)} }
+@keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+::-webkit-scrollbar { width:2px; background:#154060; }
+::-webkit-scrollbar-thumb { background:#1e527a; }
 
+#topbar { background:#154060; border-bottom:1px solid #1e527a; padding:0 16px; height:40px; display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
+.brand { font-size:11px; font-weight:700; color:#fff; letter-spacing:3px; }
+.tag { font-size:9px; color:#3d7a9e; letter-spacing:2px; margin-left:10px; }
+.tb-right { display:flex; align-items:center; gap:12px; }
+#market-dot { width:5px; height:5px; border-radius:50%; display:inline-block; margin-right:5px; }
+#market-label { font-size:9px; letter-spacing:2px; }
+#scan-btn { background:transparent; border:1px solid #1e527a; color:#555; font-size:9px; padding:3px 10px; cursor:pointer; letter-spacing:1px; border-radius:2px; }
+#scan-btn:disabled { color:#3d7a9e; cursor:default; }
+#wire-toggle-btn { display:none; background:transparent; border:1px solid #EF444433; color:#EF4444; font-size:9px; padding:3px 10px; cursor:pointer; border-radius:2px; letter-spacing:1px; }
+
+#layout { flex:1; display:flex; overflow:hidden; }
+
+#sidebar { width:185px; background:#154060; border-right:1px solid #1e527a; overflow-y:auto; flex-shrink:0; }
+.cat-hdr { padding:8px 12px 5px; border-bottom:1px solid #184a6e; display:flex; align-items:center; gap:6px; }
+.cat-lbl { font-size:8px; letter-spacing:3px; font-weight:700; }
+.ev-btn { width:100%; background:transparent; border:none; border-bottom:1px solid #184a6e; border-left:2px solid transparent; padding:8px 12px; cursor:pointer; text-align:left; transition:all 0.15s; }
+.ev-btn:hover { background:#102c48; }
+.ev-btn.active { background:#113252; }
+.ev-title { font-size:10px; color:#666; display:flex; justify-content:space-between; align-items:center; margin-bottom:2px; }
+.ev-btn.active .ev-title { color:#fff; font-weight:700; }
+.ev-desc-s { font-size:9px; color:#4a8aaa; line-height:1.4; }
+.sig-badge { font-size:7px; padding:1px 4px; border-radius:1px; letter-spacing:1px; font-weight:700; }
+
+#main { flex:1; overflow-y:auto; background:#122f50; display:flex; flex-direction:column; }
+#main-inner { padding:16px 20px; flex:1; }
+.ev-hdr { padding-bottom:12px; margin-bottom:12px; border-bottom:1px solid #1a2840; }
+.ev-cat-tag { font-size:8px; letter-spacing:3px; margin-bottom:3px; }
+.ev-name { font-size:15px; font-weight:700; color:#fff; margin-bottom:3px; }
+.ev-desc-t { font-size:10px; color:#444; margin-bottom:8px; }
+.logic-pill { display:inline-flex; align-items:flex-start; gap:6px; background:#0f2f48; border:1px solid #1a2840; border-radius:4px; padding:5px 9px; }
+.logic-tag { font-size:8px; color:#3B82F6; letter-spacing:1px; font-weight:700; flex-shrink:0; margin-top:1px; }
+.logic-txt { font-size:9px; color:#5a8aaa; line-height:1.5; }
+.int-row { margin-top:10px; display:flex; align-items:center; gap:10px; }
+.int-lbl { font-size:8px; color:#3d7a9e; letter-spacing:1px; width:68px; }
+.int-bar-wrap { flex:1; height:2px; background:#111; border-radius:2px; overflow:hidden; }
+.int-bar { height:100%; width:0%; transition:width 1s ease; border-radius:2px; }
+.int-num { font-size:26px; font-weight:800; font-family:monospace; line-height:1; }
+.last-sig { margin-top:7px; font-size:10px; color:#555; font-style:italic; line-height:1.5; animation:fadeIn 0.4s ease; }
+.ai-loading { margin-top:10px; display:flex; align-items:center; gap:8px; }
+.ai-dot { width:4px; height:4px; border-radius:50%; background:#2a2a2a; }
+.ai-txt { font-size:9px; color:#3d7a9e; letter-spacing:2px; }
+.err-row { margin-top:10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.err-txt { font-size:9px; color:#EF4444; }
+.retry-btn { background:transparent; border:1px solid #EF444433; color:#EF4444; font-size:9px; padding:2px 8px; cursor:pointer; border-radius:2px; }
+
+/* TOP MOVERS */
+#top-movers { margin-bottom:12px; display:flex; gap:5px; align-items:center; flex-wrap:wrap; min-height:20px; }
+.mover-lbl { font-size:8px; color:#3d7a9e; letter-spacing:2px; }
+.mover-chip { font-family:monospace; font-size:10px; font-weight:700; padding:2px 7px; border-radius:2px; }
+
+/* SECTOR */
+.sec-block { margin-bottom:18px; }
+.sec-hdr { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.sec-dir { font-size:8px; font-weight:700; letter-spacing:2px; }
+.sec-name { font-size:8px; color:#4a8aaa; letter-spacing:2px; }
+.sec-avg { font-size:9px; font-family:monospace; font-weight:700; }
+.sec-line { flex:1; height:1px; background:#111; }
+.sec-note { font-size:8px; color:#374151; font-style:italic; }
+.tickers-row { display:flex; gap:5px; flex-wrap:wrap; }
+
+/* TICKER CELL */
+.tc { border-radius:3px; padding:9px 10px; min-width:88px; position:relative; transition:background 0.8s ease; cursor:default; }
+.tc .ses-tag { position:absolute; top:3px; left:5px; font-size:7px; font-weight:700; letter-spacing:1px; }
+.tc .hot-dot { position:absolute; top:4px; right:4px; width:4px; height:4px; border-radius:50%; animation:blink 1s step-end infinite; }
+.tc .sym { font-family:monospace; font-size:11px; font-weight:700; color:#fff; }
+.tc .score-val { font-size:14px; font-weight:800; font-family:monospace; margin-top:2px; line-height:1; }
+/* RSI badge */
+.rsi-row { display:flex; align-items:center; gap:4px; margin-top:4px; }
+.rsi-val { font-size:10px; font-family:monospace; font-weight:700; }
+.rsi-badge { font-size:7px; padding:1px 4px; border-radius:2px; font-weight:700; letter-spacing:1px; }
+.tc .price-row { margin-top:3px; display:flex; gap:3px; }
+.tc .pv { font-size:9px; color:#444; font-family:monospace; }
+.tc .cv { font-size:9px; font-family:monospace; }
+.tc .dots-l { font-size:10px; color:#3d7a9e; margin-top:4px; animation:blink 1.5s infinite; }
+.tooltip { display:none; position:absolute; bottom:calc(100% + 5px); left:0; z-index:99; background:#113252; border:1px solid #222; border-radius:4px; padding:7px 9px; width:210px; font-size:10px; color:#aaa; line-height:1.6; pointer-events:none; animation:fadeIn 0.15s ease; }
+.tc:hover .tooltip { display:block; }
+
+/* RSI spinner for loading */
+.rsi-loading { display:inline-block; width:10px; height:10px; border:1px solid #333; border-top-color:#555; border-radius:50%; animation:spin 0.8s linear infinite; vertical-align:middle; margin-top:4px; }
+
+/* LEGEND */
+#legend { padding:8px 20px; border-top:1px solid #184a6e; display:flex; justify-content:space-between; align-items:center; flex-shrink:0; flex-wrap:wrap; gap:6px; }
+.leg-txt { font-size:8px; color:#3d7a9e; letter-spacing:1px; }
+.leg-items { display:flex; gap:10px; flex-wrap:wrap; }
+.leg-item { display:flex; align-items:center; gap:3px; }
+.leg-dot { width:6px; height:6px; border-radius:1px; }
+.leg-item span { font-size:8px; color:#4a8aaa; }
+
+/* WIRE */
+#wire { width:250px; border-left:1px solid #1e527a; display:flex; flex-direction:column; background:#154060; flex-shrink:0; }
+#wire-hdr { padding:9px 13px; border-bottom:1px solid #1e527a; display:flex; align-items:center; gap:8px; }
+.wire-dot { width:5px; height:5px; border-radius:50%; background:#EF4444; animation:blink 1.5s step-end infinite; }
+.wire-title { font-size:9px; color:#EF4444; letter-spacing:3px; font-weight:700; }
+#demand-sum { padding:9px 13px; border-bottom:1px solid #184a6e; background:#0f2f48; display:none; }
+.ds-tag { font-size:8px; color:#3B82F6; letter-spacing:2px; margin-bottom:4px; font-weight:700; }
+.ds-txt { font-size:10px; color:#7aa; line-height:1.6; }
+#wire-feed { flex:1; overflow-y:auto; }
+.hl-item { padding:10px 13px; border-bottom:1px solid #184a6e; cursor:default; }
+.hl-item:hover { background:#102c48; }
+.hl-meta { display:flex; align-items:center; gap:5px; margin-bottom:3px; }
+.hl-dot { width:5px; height:5px; border-radius:50%; flex-shrink:0; }
+.hl-src { font-size:8px; color:#4a8aaa; letter-spacing:1px; }
+.hl-title { font-size:10px; color:#bbb; line-height:1.5; margin-bottom:3px; }
+.hl-sum { font-size:9px; color:#444; line-height:1.4; }
+#wire-empty { padding:13px; font-size:9px; color:#3d7a9e; letter-spacing:1px; }
+
+/* TABS */
+#tabs { background:#154060; border-top:1px solid #1e527a; display:flex; height:34px; flex-shrink:0; overflow-x:auto; }
+.tab-btn { background:transparent; border:none; border-right:1px solid #184a6e; border-top:2px solid transparent; padding:0 11px; cursor:pointer; display:flex; align-items:center; gap:4px; flex-shrink:0; }
+.tab-btn.active { background:#113252; }
+.tab-num { font-size:7px; color:#3d7a9e; font-weight:700; }
+.tab-btn.active .tab-num { color:#fff; }
+.tab-icon { font-size:8px; color:#3d7a9e; }
+.tab-name { font-size:8px; color:#3d7a9e; letter-spacing:1px; white-space:nowrap; }
+.tab-btn.active .tab-name { color:#888; }
+.tab-live { width:4px; height:4px; border-radius:50%; background:#EF4444; animation:blink 1s step-end infinite; flex-shrink:0; }
+#tabs-right { flex:1; display:flex; align-items:center; justify-content:flex-end; padding:0 12px; }
+#scan-lbl { font-size:8px; color:#3d7a9e; letter-spacing:2px; animation:blink 1s infinite; display:none; }
+
+/* MOBILE PILLS */
+#mobile-pills { display:none; overflow-x:auto; white-space:nowrap; padding:7px 12px; border-bottom:1px solid #184a6e; background:#154060; flex-shrink:0; }
+
+/* RESPONSIVE */
+@media (max-width:768px) {
+  #sidebar { display:none; }
+  #wire { display:none; position:fixed; top:40px; left:0; right:0; bottom:34px; z-index:50; width:100%; }
+  #wire.open { display:flex; }
+  #wire-toggle-btn { display:block; }
+  #mobile-pills { display:block; }
+  #main-inner { padding:12px 12px; }
+  .ev-name { font-size:13px; }
+  .logic-pill { display:none; }
+  .tc { min-width:76px; padding:8px 8px; }
+  .tc .sym { font-size:10px; }
+  .score-val { font-size:12px !important; }
+  .rsi-val { font-size:9px !important; }
+  #legend { display:none; }
+  .tag { display:none; }
+}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <div style="display:flex;align-items:center">
+    <span class="brand">DEMAND SIGNAL</span>
+    <span class="tag">EVENT → DEMAND → TICKER</span>
+  </div>
+  <div class="tb-right">
+    <button id="wire-toggle-btn" onclick="toggleWire()">⚡ WIRE</button>
+    <div style="display:flex;align-items:center">
+      <span id="market-dot"></span>
+      <span id="market-label"></span>
+    </div>
+    <button id="scan-btn" onclick="scan(true)">↺ SCAN</button>
+  </div>
+</div>
+
+<div id="layout">
+  <div id="sidebar"></div>
+  <div id="main">
+    <div id="mobile-pills"></div>
+    <div id="main-inner">
+      <div class="ev-hdr" id="ev-hdr"></div>
+      <div id="top-movers"></div>
+      <div id="heatmap"></div>
+    </div>
+    <div id="legend">
+      <span class="leg-txt">Score AI -100→+100 · RSI(14) · hover = razón · OVERSOLD &lt;35 · OVERBOUGHT &gt;65</span>
+      <div class="leg-items">
+        <div class="leg-item"><div class="leg-dot" style="background:#10B981"></div><span>Demanda sube</span></div>
+        <div class="leg-item"><div class="leg-dot" style="background:#EF4444"></div><span>Demanda baja</span></div>
+        <div class="leg-item"><div class="leg-dot" style="background:#3B82F6"></div><span>OVERSOLD</span></div>
+        <div class="leg-item"><div class="leg-dot" style="background:#F59E0B"></div><span>OVERBOUGHT</span></div>
+      </div>
+    </div>
+  </div>
+  <div id="wire">
+    <div id="wire-hdr"><div class="wire-dot"></div><span class="wire-title">THE WIRE</span></div>
+    <div id="demand-sum"><div class="ds-tag">CADENA DE DEMANDA</div><div class="ds-txt" id="ds-txt"></div></div>
+    <div id="wire-feed"><div id="wire-empty">SIN SEÑALES</div></div>
+  </div>
+</div>
+
+<div id="tabs"><div id="tabs-right"><span id="scan-lbl">SCANNING···</span></div></div>
+
+<script>
+// ── EVENTS ────────────────────────────────────────────────────────────────────
+const EVENTS = [
+  { id:"HEATWAVE",  cat:"CLIMA",   label:"Ola de calor",    desc:"Temperaturas extremas sostenidas en grandes zonas urbanas",    demandLogic:"Heat wave causes surge in electricity consumption driving demand for power generation and natural gas", sectors:["Power Generation","Natural Gas","HVAC","Utilities"] },
+  { id:"HURRICANE", cat:"CLIMA",   label:"Huracan",         desc:"Huracan categoria 3+ impactando costa del Golfo o Este EEUU",  demandLogic:"Hurricane causes destruction driving demand for generators, construction materials and insurance claims", sectors:["Generators","Construction Materials","Refiners","Insurance"] },
+  { id:"DROUGHT",   cat:"CLIMA",   label:"Sequia agricola", desc:"Sequia severa en zonas agricolas clave",                       demandLogic:"Drought damages crops causing commodity price surge and replanting demand for fertilizers and seeds", sectors:["Fertilizers","Agriculture Seeds","Water Utilities","Food Processing"] },
+  { id:"FLOOD",     cat:"CLIMA",   label:"Inundaciones",    desc:"Lluvias masivas en zonas urbanas o agricolas",                 demandLogic:"Flooding drives water infrastructure rebuild and hurts property insurers", sectors:["Water Infrastructure","Property Insurance","Construction","Agriculture Commodities"] },
+  { id:"PANDEMIC",  cat:"SALUD",   label:"Brote pandemico", desc:"Nuevo patogeno con potencial de expansion global",             demandLogic:"Pandemic panic drives massive demand for vaccines antivirals diagnostics and protective equipment", sectors:["Vaccines mRNA","Diagnostics","Medical Supplies","Airlines Hotels"] },
+  { id:"FLU",       cat:"SALUD",   label:"Gripe severa",    desc:"Temporada de gripe inusualmente intensa",                     demandLogic:"Severe flu season drives antiviral sales rapid testing and pharmacy traffic", sectors:["Antivirals","Diagnostics","Pharmacy Retail","Hospitals"] },
+  { id:"HORMUZ",    cat:"GEO",     label:"Tension Hormuz",  desc:"Bloqueo o ataque en Estrecho de Hormuz",                     demandLogic:"Blockade restricts oil supply causing price spike benefiting producers and hurting airlines", sectors:["Oil E&P","Oilfield Services","Airlines","Shipping"] },
+  { id:"TAIWAN",    cat:"GEO",     label:"Escalada Taiwan", desc:"Tension militar en estrecho de Taiwan",                       demandLogic:"Taiwan conflict drives defense spending and semiconductor supply chain panic", sectors:["Defense","Gold Safe Haven","Semiconductors","Consumer Retail"] },
+  { id:"NATO",      cat:"GEO",     label:"Escalada OTAN",   desc:"Confrontacion directa o incidente en frontera OTAN",          demandLogic:"NATO conflict drives weapons procurement energy demand and safe haven flows", sectors:["Defense","Energy","Safe Haven Assets","Risk-Off ETFs"] },
+  { id:"AI_BOOM",   cat:"TECH",    label:"Boom de IA",      desc:"Inversion masiva en infraestructura de IA",                   demandLogic:"AI scaling drives demand for chips power datacenters cooling and fiber networks", sectors:["AI Chips","Data Center Power","Cooling Infrastructure","Fiber Networks"] },
+  { id:"CYBER",     cat:"TECH",    label:"Cyberattack",     desc:"Ataque a infraestructura critica o sistema bancario",         demandLogic:"Cyberattack triggers emergency demand for cybersecurity solutions", sectors:["Cybersecurity","Defense IT","Banks affected","Utilities affected"] },
+  { id:"SUPERBOWL", cat:"CONSUMO", label:"Evento masivo",   desc:"Super Bowl, Mundial u otro evento de audiencia global",       demandLogic:"Mass event drives food beverage streaming advertising and delivery demand", sectors:["Beverages Snacks","Streaming Advertising","Delivery Apps","Retail"] },
+  { id:"BTS",       cat:"CONSUMO", label:"Back to School",  desc:"Temporada de alta demanda de consumo masivo",                 demandLogic:"Seasonal spending surge drives electronics apparel and logistics demand", sectors:["Retail","Consumer Electronics","Logistics","Apparel"] },
+];
+
+// ── CLIENT SECTOR MAP ────────────────────────────────────────────────────────
+const SECTOR_MAP_CLIENT = {
+  HEATWAVE:  [{name:"Power Generation",dir:"LONG",tickers:["CEG","VST","NRG","AES","ETR"]},{name:"Natural Gas",dir:"LONG",tickers:["LNG","EQT","AR","SWN"]},{name:"HVAC",dir:"LONG",tickers:["LII","CARR","TT"]},{name:"Utilities",dir:"WATCH",tickers:["NEE","DUK","SO","AEP"]}],
+  HURRICANE: [{name:"Generators",dir:"LONG",tickers:["GNRC","SHYF","POWI"]},{name:"Construction",dir:"LONG",tickers:["HD","LOW","SHW","MLM","VMC"]},{name:"Refiners",dir:"LONG",tickers:["MPC","VLO","PSX"]},{name:"Insurance",dir:"SHORT",tickers:["RE","RNR","MKL"]}],
+  DROUGHT:   [{name:"Fertilizers",dir:"LONG",tickers:["MOS","NTR","CF","ICL"]},{name:"Agro Seeds",dir:"LONG",tickers:["CTVA","FMC"]},{name:"Water",dir:"LONG",tickers:["AWK","WTRG","CWT"]},{name:"Food Processing",dir:"SHORT",tickers:["CPB","SJM","CAG","MKC"]}],
+  FLOOD:     [{name:"Water Infra",dir:"LONG",tickers:["XYL","AWK"]},{name:"Construction",dir:"LONG",tickers:["VMC","MLM","NUE"]},{name:"Insurance",dir:"SHORT",tickers:["ALL","TRV","CB","HIG"]},{name:"Agro",dir:"WATCH",tickers:["ADM","BG","INGR"]}],
+  PANDEMIC:  [{name:"Vaccines",dir:"LONG",tickers:["MRNA","PFE","BNTX","NVAX"]},{name:"Diagnostics",dir:"LONG",tickers:["QDEL","BDX","DHR","TMO"]},{name:"Medical",dir:"LONG",tickers:["MMM","HOLX"]},{name:"Airlines",dir:"SHORT",tickers:["UAL","DAL","MAR","HLT"]}],
+  FLU:       [{name:"Antivirals",dir:"LONG",tickers:["GILD","ABBV","JNJ","MRK"]},{name:"Diagnostics",dir:"LONG",tickers:["QDEL","BDX"]},{name:"Pharmacy",dir:"LONG",tickers:["CVS","WBA"]},{name:"Hospitals",dir:"WATCH",tickers:["HCA","THC","CYH"]}],
+  HORMUZ:    [{name:"Oil E&P",dir:"LONG",tickers:["XOM","CVX","OXY","COP","EOG"]},{name:"Oilfield",dir:"LONG",tickers:["SLB","HAL","BKR"]},{name:"Airlines",dir:"SHORT",tickers:["UAL","DAL","AAL"]},{name:"Shipping",dir:"WATCH",tickers:["ZIM","MATX","STNG"]}],
+  TAIWAN:    [{name:"Defense",dir:"LONG",tickers:["LMT","RTX","NOC","GD","HII"]},{name:"Gold",dir:"LONG",tickers:["GLD","IAU","NEM","GOLD"]},{name:"Semis",dir:"SHORT",tickers:["NVDA","AMD","AMAT","LRCX"]},{name:"Consumer",dir:"SHORT",tickers:["AAPL","AMZN","WMT"]}],
+  NATO:      [{name:"Defense",dir:"LONG",tickers:["LMT","RTX","NOC","GD","LDOS"]},{name:"Energy",dir:"LONG",tickers:["XOM","CVX","LNG","CQP"]},{name:"Safe Haven",dir:"LONG",tickers:["GLD","TLT","IAU"]},{name:"Risk-Off",dir:"SHORT",tickers:["SPY","QQQ","IWM"]}],
+  AI_BOOM:   [{name:"AI Chips",dir:"LONG",tickers:["NVDA","AMD","AVGO","MRVL"]},{name:"DC Power",dir:"LONG",tickers:["CEG","VST","ETR","NRG"]},{name:"Cooling",dir:"LONG",tickers:["VRT","SMCI"]},{name:"Fiber",dir:"LONG",tickers:["CIEN","CSCO","JNPR"]}],
+  CYBER:     [{name:"Cybersec",dir:"LONG",tickers:["CRWD","PANW","ZS","FTNT","S"]},{name:"Defense IT",dir:"LONG",tickers:["LDOS","SAIC","BAH","CACI"]},{name:"Banks",dir:"SHORT",tickers:["JPM","BAC"]},{name:"Utilities",dir:"SHORT",tickers:["NEE","DUK"]}],
+  SUPERBOWL: [{name:"Beverages",dir:"LONG",tickers:["PEP","KO","TAP","STZ"]},{name:"Streaming",dir:"LONG",tickers:["NFLX","GOOGL","META","TTD"]},{name:"Delivery",dir:"LONG",tickers:["DASH","UBER"]},{name:"Retail",dir:"WATCH",tickers:["WMT","TGT","COST"]}],
+  BTS:       [{name:"Retail",dir:"LONG",tickers:["WMT","TGT","AMZN","COST"]},{name:"Electronics",dir:"LONG",tickers:["AAPL","DELL","HPQ","BBY"]},{name:"Logistics",dir:"LONG",tickers:["UPS","FDX"]},{name:"Apparel",dir:"WATCH",tickers:["NKE","PVH","RL"]}],
+};
+
+// ── HOT STATE ────────────────────────────────────────────────────────────────
+let hotCache = null;
+let hotRunning = false;
+
+async function fetchHotTickers() {
+  if (hotRunning) return;
+  if (hotCache && Date.now() - hotCache.ts < 5*60*1000) return;
+  hotRunning = true;
+  renderHotLoading();
+  try {
+    const allScores = [];
+    await Promise.all(Object.keys(SCORE_MAP).map(async evId => {
+      try {
+        const res = await fetch("/api/score/" + evId);
+        const data = await res.json();
+        if (!data.sectors) return;
+        const meta = CAT[EVENTS.find(e=>e.id===evId)?.cat] || {};
+        for (const sec of data.sectors) {
+          for (const t of sec.tickers||[]) {
+            allScores.push({
+              sym: t.sym, score: t.score, dir: sec.dir,
+              event: evId, eventLabel: EVENTS.find(e=>e.id===evId)?.label||evId,
+              catColor: meta.color||"#fff", intensity: data.eventIntensity||0
+            });
+          }
+        }
+      } catch {}
+    }));
+    // Deduplicate — keep highest abs score per ticker
+    const map = {};
+    for (const t of allScores) {
+      if (!map[t.sym] || Math.abs(t.score) > Math.abs(map[t.sym].score)) map[t.sym] = t;
+    }
+    const sorted = Object.values(map).sort((a,b) => Math.abs(b.score)-Math.abs(a.score)).slice(0,5);
+    // Fetch RSI for top 5
+    await Promise.allSettled(sorted.map(async t => {
+      const rd = await fetchRSIData(t.sym);
+      if (rd) { t.rsi=rd.rsi; t.price=rd.price; t.chg=rd.chg; t.session=rd.session; }
+    }));
+    hotCache = { tickers: sorted, ts: Date.now() };
+    renderHot();
+  } catch(e) { renderHotError(e.message); }
+  hotRunning = false;
+}
+
+async function fetchRSIData(sym) {
+  if (rsiCache[sym] && Date.now()-rsiCache[sym].ts < 5*60*1000) return rsiCache[sym];
+  try {
+    const r = await fetch("/api/price/"+sym);
+    const d = await r.json();
+    const res = d?.chart?.result?.[0];
+    if (!res) return null;
+    const closes = (res.indicators?.quote?.[0]?.close??[]).filter(v=>v!=null);
+    const m = res.meta;
+    const prev = m._prevClose ?? m.regularMarketPreviousClose ?? m.chartPreviousClose ?? m.regularMarketPrice;
+    let price=m.regularMarketPrice, session=m._sessionLabel??"CLOSED";
+    if(m.marketState==="PRE"&&m.preMarketPrice) price=m.preMarketPrice;
+    if((m.marketState==="POST"||m.marketState==="POSTPOST")&&m.postMarketPrice) price=m.postMarketPrice;
+    const obj = { rsi:calcRSI(closes), price, chg:prev?parseFloat(((price-prev)/prev*100).toFixed(2)):0, session, ts:Date.now() };
+    rsiCache[sym]=obj; return obj;
+  } catch { return null; }
+}
+
+const CAT = {
+  CLIMA:   { label:"CLIMA",    color:"#3B82F6", dot:"🌩" },
+  SALUD:   { label:"SALUD",    color:"#10B981", dot:"🦠" },
+  GEO:     { label:"GEOPOLIT", color:"#EF4444", dot:"🌐" },
+  TECH:    { label:"TECH",     color:"#8B5CF6", dot:"⚡" },
+  CONSUMO: { label:"CONSUMO",  color:"#F59E0B", dot:"📦" },
+};
+
+// ── ALL EVENT IDS for HOT scan ───────────────────────────────────────────────
+const SCORE_MAP = ["HEATWAVE","HURRICANE","DROUGHT","FLOOD","PANDEMIC","FLU","HORMUZ","TAIWAN","NATO","AI_BOOM","CYBER","SUPERBOWL","BTS"];
+
+// ── STATE ─────────────────────────────────────────────────────────────────────
+let activeId  = "OVERVIEW";
+let aiCache   = {};      // { [eventId]: { sectors:[{name,dir,tickers:[{sym,score,reason}]}], ... } }
+let rsiCache  = {};      // { [sym]: { rsi, price, chg, session, ts } }
+let aiRunning = false;
+let priceTimer = null;
+
+// ── MARKET STATE ──────────────────────────────────────────────────────────────
+function getMS() {
+  const et = new Date(new Date().toLocaleString("en-US",{timeZone:"America/New_York"}));
+  const d=et.getDay(), m=et.getHours()*60+et.getMinutes();
+  if(d===0||d===6) return "CLOSED";
+  if(m>=570&&m<960) return "LIVE";
+  if(m>=240&&m<570) return "PRE";
+  if(m>=960&&m<1200) return "POST";
+  return "CLOSED";
+}
+function updateMarket() {
+  const s=getMS(), c={LIVE:"#10B981",PRE:"#3B82F6",POST:"#F59E0B",CLOSED:"#374151"};
+  const dot=document.getElementById("market-dot");
+  dot.style.cssText=`width:5px;height:5px;border-radius:50%;display:inline-block;margin-right:5px;background:${c[s]};${s==="LIVE"?"animation:blink 2s infinite":""}`;
+  const lbl=document.getElementById("market-label");
+  lbl.textContent="NYSE "+s; lbl.style.color=c[s];
+}
+
+// ── RSI CALCULATION ───────────────────────────────────────────────────────────
+function calcRSI(closes, period=14) {
+  if (closes.length < period+1) return null;
+  let gains=0, losses=0;
+  for (let i=1; i<=period; i++) {
+    const d = closes[i]-closes[i-1];
+    if(d>0) gains+=d; else losses+=Math.abs(d);
+  }
+  let avgGain=gains/period, avgLoss=losses/period;
+  for (let i=period+1; i<closes.length; i++) {
+    const d=closes[i]-closes[i-1];
+    avgGain = (avgGain*(period-1)+(d>0?d:0))/period;
+    avgLoss = (avgLoss*(period-1)+(d<0?Math.abs(d):0))/period;
+  }
+  if(avgLoss===0) return 100;
+  return parseFloat((100-(100/(1+avgGain/avgLoss))).toFixed(1));
+}
+
+async function fetchRSI(sym) {
+  // Check cache (5min)
+  if (rsiCache[sym] && Date.now()-rsiCache[sym].ts < 5*60*1000) return rsiCache[sym];
+  try {
+    const r = await fetch(`/api/price/${sym}`);
+    const d = await r.json();
+    const res = d?.chart?.result?.[0];
+    if (!res) return null;
+    const closes = res.indicators?.quote?.[0]?.close?.filter(v=>v!=null) ?? [];
+    const m = res.meta;
+    // _prevClose set by server using regularMarketPreviousClose for accurate daily chg
+    const prev = m._prevClose ?? m.regularMarketPreviousClose ?? m.chartPreviousClose ?? m.regularMarketPrice;
+    let price=m.regularMarketPrice, session=m._sessionLabel??"CLOSED";
+    if(m.marketState==="PRE"&&m.preMarketPrice){price=m.preMarketPrice;}
+    if((m.marketState==="POST"||m.marketState==="POSTPOST")&&m.postMarketPrice){price=m.postMarketPrice;}
+    const rsi = calcRSI(closes);
+    const obj = { rsi, price, chg: prev?parseFloat(((price-prev)/prev*100).toFixed(2)):0, session, ts:Date.now() };
+    rsiCache[sym] = obj;
+    return obj;
+  } catch { return null; }
+}
+
+// ── SCORING — server-side deterministic + RSS headlines ─────────────────────
+async function fetchAIScores(event) {
+  const res = await fetch("/api/score/" + event.id);
+  if (!res.ok) { const t = await res.text(); throw new Error("HTTP " + res.status + ": " + t.slice(0,100)); }
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+
+const scColor  = s => s==null?"#141414":s>0?`rgba(16,185,129,${0.1+Math.min(s/100,1)*0.55})`:`rgba(239,68,68,${0.1+Math.min(Math.abs(s)/100,1)*0.55})`;
+const scBorder = s => s==null?"#1f1f1f":s>40?"#10B98155":s<-40?"#EF444455":"#1f1f1f";
+const fmtSc    = s => s>0?"+"+s:""+s;
+const fmtChg   = c => c>=0?"+"+c+"%":c+"%";
+const iCol     = n => n>=70?"#EF4444":n>=40?"#F59E0B":"#10B981";
+const sesCol   = {LIVE:"#10B981",PRE:"#3B82F6",POST:"#F59E0B",CLOSED:"#374151"};
+const impCol   = {BULLISH:"#10B981",BEARISH:"#EF4444",NEUTRAL:"#374151"};
+
+function rsiColor(rsi) {
+  if(rsi==null) return "#374151";
+  if(rsi<=30) return "#3B82F6";      // strong oversold — blue
+  if(rsi<=35) return "#60A5FA";      // oversold — light blue
+  if(rsi>=70) return "#F59E0B";      // strong overbought — amber
+  if(rsi>=65) return "#FCD34D";      // overbought — yellow
+  return "#374151";                  // neutral — gray
+}
+function rsiLabel(rsi) {
+  if(rsi==null) return "";
+  if(rsi<=30) return "OVERSOLD";
+  if(rsi<=35) return "OVS";
+  if(rsi>=70) return "OVERBOUGHT";
+  if(rsi>=65) return "OVB";
+  return "";
+}
+
+// ── HOT RENDER ────────────────────────────────────────────────────────────────
+function renderHotLoading() {
+  if (activeId !== "HOT") return;
+  const el = document.getElementById("main-inner");
+  if (!el) return;
+  el.innerHTML = `
+    <div style="padding:20px 0;display:flex;align-items:center;gap:8px">
+      <div style="width:5px;height:5px;border-radius:50%;background:#F59E0B;animation:blink 1s ease 0s infinite"></div>
+      <div style="width:5px;height:5px;border-radius:50%;background:#F59E0B;animation:blink 1s ease 0.2s infinite"></div>
+      <div style="width:5px;height:5px;border-radius:50%;background:#F59E0B;animation:blink 1s ease 0.4s infinite"></div>
+      <span style="font-size:9px;color:#4a8aaa;letter-spacing:2px">ESCANEANDO TODO EL UNIVERSO···</span>
+    </div>`;
+}
+
+function renderHotError(msg) {
+  if (activeId !== "HOT") return;
+  const el = document.getElementById("main-inner");
+  if (!el) return;
+  el.innerHTML = `<div style="padding:20px 0;font-size:9px;color:#EF4444">⚠ ${msg} <button onclick="fetchHotTickers()" style="background:transparent;border:1px solid #EF444433;color:#EF4444;font-size:9px;padding:2px 8px;cursor:pointer;border-radius:2px;margin-left:8px">REINTENTAR</button></div>`;
+}
+
+function renderHot() {
+  if (activeId !== "HOT") return;
+  const el = document.getElementById("main-inner");
+  if (!el) return;
+  const tickers = hotCache?.tickers || [];
+  let html = `
+    <div style="padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid #F59E0B22">
+      <div style="font-size:8px;color:#F59E0B;letter-spacing:3px;margin-bottom:3px">🔥 HOT</div>
+      <div style="font-size:15px;font-weight:700;color:#fff;margin-bottom:3px">Top 5 Tickers</div>
+      <div style="font-size:10px;color:#4a8aaa">Mayor señal de demanda en todo el universo · Score + RSI combinados</div>
+    </div>`;
+  tickers.forEach((t,i) => {
+    const sc = t.score||0;
+    const scColor = sc>0?"#4ade80":"#f87171";
+    const rsiC = t.rsi!=null ? (t.rsi<=35?"#60A5FA":t.rsi>=65?"#F59E0B":"#4a8aaa") : "#4a8aaa";
+    const rsiL = t.rsi!=null ? (t.rsi<=30?"OVERSOLD":t.rsi<=35?"OVS":t.rsi>=70?"OVERBOUGHT":t.rsi>=65?"OVB":"") : "";
+    const chgColor = (t.chg||0)>=0?"#4ade8066":"#f8717166";
+    const triangle = sc>0?"▲":"▼";
+    html += `
+    <div style="background:#112f4e;border:1px solid #1e527a;border-radius:6px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;gap:12px">
+      <div style="font-size:22px;font-weight:800;color:#1e527a;font-family:monospace;width:24px;text-align:center">${i+1}</div>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span style="font-size:16px;font-weight:800;color:#fff;font-family:monospace">${t.sym}</span>
+          <span style="font-size:8px;padding:2px 6px;border-radius:2px;background:${t.catColor}22;color:${t.catColor};letter-spacing:1px">${t.eventLabel}</span>
+          ${t.session&&t.session!=="CLOSED"?`<span style="font-size:7px;color:#3B82F6;letter-spacing:1px">${t.session}</span>`:""}
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          ${t.rsi!=null?`<span style="font-size:10px;color:${rsiC};font-family:monospace">RSI ${t.rsi}${rsiL?` · <span style="font-size:8px">${rsiL}</span>`:""}</span>`:""}
+          ${t.price!=null?`<span style="font-size:10px;color:#4a8aaa;font-family:monospace">$${t.price.toFixed(2)}</span>`:""}
+          ${t.chg!=null?`<span style="font-size:10px;font-family:monospace;color:${chgColor}">${t.chg>=0?"+":""}${t.chg}%</span>`:""}
+        </div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:20px;font-weight:800;font-family:monospace;color:${scColor}">${triangle} ${sc>0?"+"+sc:sc}</div>
+        <div style="font-size:8px;color:#4a8aaa;letter-spacing:1px">${t.dir}</div>
+      </div>
+    </div>`;
+  });
+  if (hotCache?.ts) {
+    html += `<div style="font-size:8px;color:#1e527a;margin-top:8px">Actualizado ${new Date(hotCache.ts).toLocaleTimeString("es-AR")} · auto-refresh 5min</div>`;
+  }
+  el.innerHTML = html;
+  const tmEl = document.getElementById("top-movers");
+  if (tmEl) tmEl.innerHTML = "";
+  const hmEl = document.getElementById("heatmap");
+  if (hmEl) hmEl.innerHTML = "";
+}
+
+// ── SORTED EVENTS BY INTENSITY ───────────────────────────────────────────────
+function eventsSortedByIntensity() {
+  return [...EVENTS].sort((a,b) => {
+    const ia = aiCache[a.id]?.eventIntensity ?? INTENSITY_FALLBACK[a.id] ?? 0;
+    const ib = aiCache[b.id]?.eventIntensity ?? INTENSITY_FALLBACK[b.id] ?? 0;
+    return ib - ia;
+  });
+}
+
+const INTENSITY_FALLBACK = {
+  HEATWAVE:40, HURRICANE:35, DROUGHT:30, FLOOD:30,
+  PANDEMIC:45, FLU:35, HORMUZ:55, TAIWAN:60,
+  NATO:50, AI_BOOM:70, CYBER:50, SUPERBOWL:40, BTS:35,
+};
+
+// ── OVERVIEW RENDER ──────────────────────────────────────────────────────────
+function renderOverview() {
+  const mi = document.getElementById("main-inner");
+  if (!mi) return;
+  const sorted = eventsSortedByIntensity();
+
+  let html = `<div style="padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid #1e527a33">
+    <div style="font-size:8px;color:#4a8aaa;letter-spacing:3px;margin-bottom:2px">TODOS LOS EPISODIOS</div>
+    <div style="font-size:13px;font-weight:700;color:#fff">Vista General · Mayor a Menor Intensidad</div>
+  </div>`;
+
+  for (const ev of sorted) {
+    const meta      = CAT[ev.cat];
+    const intensity = aiCache[ev.id]?.eventIntensity ?? INTENSITY_FALLBACK[ev.id] ?? 0;
+    const iCol      = intensity>=70?"#EF4444":intensity>=40?"#F59E0B":"#10B981";
+    // tickers rendered from SECTOR_MAP_CLIENT below
+
+    html += `
+    <div onclick="switchEvent('${ev.id}')" style="margin-bottom:10px;padding:10px 12px;background:#112f4e;border:1px solid #1e527a;border-left:3px solid ${meta.color};border-radius:5px;cursor:pointer"
+      onmouseover="this.style.background='#1a3d5c'" onmouseout="this.style.background='#112f4e'">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:7px">
+          <span>${meta.dot}</span>
+          <span style="font-size:11px;font-weight:700;color:#fff">${ev.label}</span>
+          <span style="font-size:8px;color:${meta.color};letter-spacing:1px">${meta.label}</span>
+        </div>
+        <span style="font-size:16px;font-weight:800;font-family:monospace;color:${iCol}">${intensity}</span>
+      </div>
+      <div style="height:3px;background:#0f2a42;border-radius:2px;margin-bottom:7px;overflow:hidden">
+        <div style="height:100%;width:${intensity}%;background:${iCol};border-radius:2px"></div>
+      </div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap">
+        ${(SECTOR_MAP_CLIENT[ev.id]||[]).flatMap(s => {
+          const arrow = s.dir==="LONG" ? "▲" : s.dir==="SHORT" ? "▼" : "◈";
+          const col   = s.dir==="LONG" ? "#4ade80" : s.dir==="SHORT" ? "#f87171" : "#F59E0B";
+          return s.tickers.slice(0,3).map(sym =>
+            `<span style="font-family:monospace;font-size:9px;color:${col};background:#0f2a42;padding:1px 5px;border-radius:2px;border:1px solid ${col}22">${arrow} ${sym}</span>`
+          );
+        }).slice(0,12).join("")}
+      </div>
+    </div>`;
+  }
+
+  mi.innerHTML = html;
+  document.getElementById("top-movers").innerHTML = "";
+  document.getElementById("heatmap").innerHTML = "";
+  renderWire(null);
+}
+
+// ── RENDER ────────────────────────────────────────────────────────────────────
+function renderSidebar() {
+  let html="";
+  const sorted = eventsSortedByIntensity();
+  for(const [cat,meta] of Object.entries(CAT)){
+    html+=`<div class="cat-hdr"><span>${meta.dot}</span><span class="cat-lbl" style="color:${meta.color}">${meta.label}</span></div>`;
+    for(const ev of sorted.filter(e=>e.cat===cat)){
+      const isA=ev.id===activeId, eAI=aiCache[ev.id];
+      const sig=eAI?.signal;
+      const bc=sig==="ACTIVE"?"#EF4444":sig==="ELEVATED"?"#F59E0B":"#10B981";
+      html+=`<button class="ev-btn${isA?" active":""}" onclick="switchEvent('${ev.id}')" style="border-left-color:${isA?meta.color:"transparent"}">
+        <div class="ev-title">${ev.label}${sig?`<span class="sig-badge" style="background:${bc}22;color:${bc}">${sig}</span>`:""}</div>
+        <div class="ev-desc-s">${ev.desc}</div>
+      </button>`;
+    }
+  }
+  document.getElementById("sidebar").innerHTML=html;
+}
+
+function renderMobilePills() {
+  if(window.innerWidth>768){document.getElementById("mobile-pills").style.display="none";return;}
+  document.getElementById("mobile-pills").style.display="block";
+  const isOvM = activeId==="OVERVIEW";
+  const isHot = activeId==="HOT";
+  let html=`<span onclick="switchEvent('OVERVIEW')" style="display:inline-block;margin-right:5px;padding:4px 9px;border-radius:12px;font-size:9px;cursor:pointer;font-weight:${isOvM?700:400};background:${isOvM?"#7dd3fc22":"#111"};color:${isOvM?"#7dd3fc":"#555"};border:1px solid ${isOvM?"#7dd3fc":"#222"}">≡ OVERVIEW</span>`;
+  html+=`<span onclick="switchEvent('HOT')" style="display:inline-block;margin-right:5px;padding:4px 9px;border-radius:12px;font-size:9px;cursor:pointer;font-weight:${isHot?700:400};background:${isHot?"#F59E0B22":"#111"};color:${isHot?"#F59E0B":"#555"};border:1px solid ${isHot?"#F59E0B":"#222"}">🔥 HOT</span>`;
+  const sortedPills = eventsSortedByIntensity();
+  for(const ev of sortedPills){
+    const meta=CAT[ev.cat];
+    {
+      const isA=ev.id===activeId;
+      html+=`<span onclick="switchEvent('${ev.id}')" style="display:inline-block;margin-right:5px;padding:4px 9px;border-radius:12px;font-size:9px;cursor:pointer;letter-spacing:1px;font-weight:${isA?700:400};background:${isA?meta.color+"22":"#111"};color:${isA?meta.color:"#555"};border:1px solid ${isA?meta.color:"#222"}">${meta.dot} ${ev.label}</span>`;
+    }
+  }
+  document.getElementById("mobile-pills").innerHTML=html;
+}
+
+function renderTabs() {
+  let html="";
+  // OVERVIEW tab
+  const isOv = activeId === "OVERVIEW";
+  html+=`<button class="tab-btn${isOv?" active":""}" onclick="switchEvent('OVERVIEW')" style="border-top-color:${isOv?"#7dd3fc":"transparent"}">
+    <span class="tab-num" style="color:${isOv?"#7dd3fc":"#2a2a2a"}">≡</span>
+    <span class="tab-name" style="color:${isOv?"#7dd3fc":"#2a2a2a"}">OVERVIEW</span>
+  </button>`;
+  // HOT tab
+  const isHot = activeId === "HOT";
+  html+=`<button class="tab-btn${isHot?" active":""}" onclick="switchEvent('HOT')" style="border-top-color:${isHot?"#F59E0B":"transparent"}">
+    <span class="tab-num" style="color:${isHot?"#F59E0B":"#2a2a2a"}">🔥</span>
+    <span class="tab-name" style="color:${isHot?"#F59E0B":"#2a2a2a"}">HOT</span>
+  </button>`;
+  const sortedEvs = eventsSortedByIntensity();
+  sortedEvs.forEach((ev,i)=>{
+    const meta=CAT[ev.cat], isA=ev.id===activeId, eAI=aiCache[ev.id];
+    html+=`<button class="tab-btn${isA?" active":""}" onclick="switchEvent('${ev.id}')" style="border-top-color:${isA?meta.color:"transparent"}">
+      <span class="tab-num">${i+1}</span>
+      <span class="tab-icon" style="color:${isA?meta.color:"#2a2a2a"}">${meta.dot}</span>
+      <span class="tab-name">${ev.label.toUpperCase()}</span>
+      ${eAI?.signal==="ACTIVE"?`<div class="tab-live"></div>`:""}
+    </button>`;
+  });
+  html+=`<div id="tabs-right"><span id="scan-lbl">SCANNING···</span></div>`;
+  document.getElementById("tabs").innerHTML=html;
+}
+
+function renderEventHeader(event, ai) {
+  const el = document.getElementById("ev-hdr");
+  if (!el) return;
+  const meta=CAT[event.cat];
+  let html=`<div style="display:flex;justify-content:space-between;align-items:flex-start">
+    <div style="flex:1">
+      <div class="ev-cat-tag" style="color:${meta.color}">${meta.dot} ${meta.label}</div>
+      <div class="ev-name">${event.label}</div>
+      <div class="ev-desc-t">${event.desc}</div>
+      <div class="logic-pill"><span class="logic-tag">LOGICA</span><span class="logic-txt">${event.demandLogic}</span></div>
+    </div>
+    ${ai?.eventIntensity!=null?`<div style="text-align:right;flex-shrink:0;margin-left:16px"><div class="int-num" style="color:${iCol(ai.eventIntensity)}">${ai.eventIntensity}</div><div style="font-size:8px;color:#4a8aaa;letter-spacing:2px">INTENSITY</div></div>`:""}
+  </div>`;
+  if(ai?.eventIntensity!=null){
+    const sc=ai.signal==="ACTIVE"?"#EF4444":ai.signal==="ELEVATED"?"#F59E0B":"#10B981";
+    html+=`<div class="int-row"><span class="int-lbl">INTENSIDAD</span><div class="int-bar-wrap"><div class="int-bar" style="width:${ai.eventIntensity}%;background:${iCol(ai.eventIntensity)}"></div></div><span class="sig-badge" style="background:${sc}22;color:${sc};font-size:8px;padding:2px 6px">${ai.signal}</span></div>`;
+  }
+  if(ai?.lastSignal) html+=`<div class="last-sig">› ${ai.lastSignal}</div>`;
+  el.innerHTML=html;
+  el.style.borderBottomColor=meta.color+"18";
+}
+
+function renderLoading() {
+  const evHdr = document.getElementById("ev-hdr"); if(!evHdr) return;
+  evHdr.insertAdjacentHTML("beforeend",
+    `<div class="ai-loading" id="ai-load-ind">
+      <div class="ai-dot" style="animation:blink 1.2s ease 0s infinite"></div>
+      <div class="ai-dot" style="animation:blink 1.2s ease 0.2s infinite"></div>
+      <div class="ai-dot" style="animation:blink 1.2s ease 0.4s infinite"></div>
+      <span class="ai-txt">INFIRIENDO DEMANDA · BUSCANDO TICKERS···</span>
+    </div>`);
+  const sl=document.getElementById("scan-lbl");
+  if(sl) sl.style.display="inline";
+}
+
+function renderError(msg) {
+  const evHdr = document.getElementById("ev-hdr"); if(!evHdr) return;
+  evHdr.insertAdjacentHTML("beforeend",
+    `<div class="err-row"><span class="err-txt">⚠ ${msg}</span><button class="retry-btn" onclick="scan(true)">REINTENTAR</button></div>`);
+  const sl=document.getElementById("scan-lbl");
+  if(sl) sl.style.display="none";
+}
+
+function renderTopMovers(sectors) {
+  if(!sectors?.length){document.getElementById("top-movers").innerHTML="";return;}
+  const all=sectors.flatMap(s=>s.tickers||[]).sort((a,b)=>Math.abs(b.score)-Math.abs(a.score)).slice(0,6);
+  if(!all.length){document.getElementById("top-movers").innerHTML="";return;}
+  let html=`<span class="mover-lbl">MAYOR SENAL</span>`;
+  for(const t of all){
+    const c=t.score>0?"#10B981":"#EF4444";
+    html+=`<span class="mover-chip" style="background:${c}14;color:${c};border:1px solid ${c}30">${t.sym} ${fmtSc(t.score)}</span>`;
+  }
+  document.getElementById("top-movers").innerHTML=html;
+}
+
+function renderHeatmap(event, ai) {
+  const sectors = ai?.sectors ?? [];
+  const loadingAI = aiRunning;
+  let html="";
+
+  if(!sectors.length && loadingAI){
+    html=`<div style="padding:20px 0;color:#3d7a9e;font-size:9px;letter-spacing:2px">BUSCANDO TICKERS RELEVANTES···</div>`;
+    document.getElementById("heatmap").innerHTML=html;
+    return;
+  }
+  if(!sectors.length){
+    html=`<div style="padding:20px 0;color:#3d7a9e;font-size:9px">Sin datos — presioná SCAN</div>`;
+    document.getElementById("heatmap").innerHTML=html;
+    return;
+  }
+
+  for(const sec of sectors){
+    const dc={LONG:"#10B981",SHORT:"#EF4444",WATCH:"#F59E0B"}[sec.dir]??"#F59E0B";
+    const dl={LONG:"▲ LONG",SHORT:"▼ SHORT",WATCH:"◈ WATCH"}[sec.dir]??"◈ WATCH";
+    const tickers=sec.tickers||[];
+    const scVals=tickers.map(t=>t.score).filter(v=>v!=null);
+    const avg=scVals.length?Math.round(scVals.reduce((a,b)=>a+b,0)/scVals.length):null;
+
+    html+=`<div class="sec-block">
+      <div class="sec-hdr">
+        <span class="sec-dir" style="color:${dc}">${dl}</span>
+        <span class="sec-name">${sec.name.toUpperCase()}</span>
+        ${avg!=null?`<span class="sec-avg" style="color:${avg>0?"#10B981":"#EF4444"}">avg ${fmtSc(avg)}</span>`:""}
+        <div class="sec-line"></div>
+        <span class="sec-note">AI dynamic tickers</span>
+      </div>
+      <div class="tickers-row">`;
+
+    for(const t of tickers){
+      const rd=rsiCache[t.sym];
+      const rsi=rd?.rsi;
+      const rsiC=rsiColor(rsi);
+      const rsiL=rsiLabel(rsi);
+      const hot=Math.abs(t.score)>=50;
+      const sesC=rd?.session?sesCol[rd.session]:"";
+
+      html+=`<div class="tc" style="background:${scColor(t.score)};border:1px solid ${scBorder(t.score)};box-shadow:${hot?("0 0 10px "+(t.score>0?"#10B98118":"#EF444418")):"none"}">
+        ${rd?.session&&rd.session!=="CLOSED"?`<span class="ses-tag" style="color:${sesC}">${rd.session}</span>`:""}
+        ${hot?`<div class="hot-dot" style="background:${t.score>0?"#10B981":"#EF4444"}"></div>`:""}
+        <div class="sym" style="margin-top:${rd?.session&&rd.session!=="CLOSED"?8:0}px">${t.sym}</div>
+        <div class="score-val" style="color:${t.score>0?"#10B981":t.score<0?"#EF4444":"#555"}">${fmtSc(t.score)}</div>
+        <div class="rsi-row">
+          ${rsi!=null
+            ? `<span class="rsi-val" style="color:${rsiC}">RSI ${rsi}</span>${rsiL?`<span class="rsi-badge" style="background:${rsiC}22;color:${rsiC}">${rsiL}</span>`:""}`
+            : `<div class="rsi-loading"></div>`
+          }
+        </div>
+        ${rd?.price!=null?`<div class="price-row"><span class="pv">$${rd.price.toFixed(2)}</span><span class="cv" style="color:${rd.chg>=0?"#10B98166":"#EF444466"}">${fmtChg(rd.chg)}</span></div>`:""}
+        <div class="tooltip">${t.reason||""}</div>
+      </div>`;
+    }
+    html+=`</div></div>`;
+  }
+  document.getElementById("heatmap").innerHTML=html;
+}
+
+function renderWire(ai) {
+  const ds=document.getElementById("demand-sum"), dt=document.getElementById("ds-txt");
+  if(ai?.demandSummary){ds.style.display="block";dt.textContent=ai.demandSummary;}
+  else ds.style.display="none";
+  const feed=document.getElementById("wire-feed");
+  if(!ai?.headlines?.length){feed.innerHTML='<div id="wire-empty">SIN SEÑALES</div>';return;}
+  let html="";
+  for(const h of ai.headlines){
+    const dc=impCol[h.impact]??"#374151";
+    html+=`<div class="hl-item"><div class="hl-meta"><div class="hl-dot" style="background:${dc}"></div><span class="hl-src">${(h.source??"").toUpperCase()}</span></div><div class="hl-title">${h.title}</div><div class="hl-sum">${h.summary}</div></div>`;
+  }
+  feed.innerHTML=html;
+}
+
+// ── RSI REFRESH for current event tickers ────────────────────────────────────
+async function refreshRSI() {
+  const ai = aiCache[activeId];
+  if(!ai?.sectors) return;
+  const tickers = [...new Set(ai.sectors.flatMap(s=>(s.tickers||[]).map(t=>t.sym)))];
+  // fetch in parallel, re-render as each comes in
+  await Promise.allSettled(tickers.map(async sym => {
+    await fetchRSI(sym);
+    // partial re-render of just heatmap
+    renderHeatmap(EVENTS.find(e=>e.id===activeId), aiCache[activeId]);
+  }));
+}
+
+// ── FULL RENDER ───────────────────────────────────────────────────────────────
+function render(loadingAI, error) {
+  // Guard: HOT
+  if (activeId === "HOT") {
+    renderSidebar(); renderTabs(); renderMobilePills(); updateMarket();
+    const mi=document.getElementById("main-inner"); if(mi) mi.innerHTML="";
+    const tm=document.getElementById("top-movers"); if(tm) tm.innerHTML="";
+    const hm=document.getElementById("heatmap"); if(hm) hm.innerHTML="";
+    if (hotCache) renderHot(); else if (!hotRunning) fetchHotTickers();
+    return;
+  }
+  // Guard: OVERVIEW
+  if (activeId === "OVERVIEW") {
+    renderSidebar(); renderTabs(); renderMobilePills(); updateMarket();
+    renderOverview();
+    return;
+  }
+
+  const event=EVENTS.find(e=>e.id===activeId);
+  const ai=aiCache[activeId];
+  renderSidebar();
+  renderTabs();
+  renderMobilePills();
+  renderEventHeader(event, ai);
+  if(loadingAI && !ai) renderLoading();
+  if(error) renderError(error);
+  if(ai) renderTopMovers(ai.sectors);
+  renderHeatmap(event, ai);
+  renderWire(ai);
+  updateMarket();
+}
+
+// ── ACTIONS ───────────────────────────────────────────────────────────────────
+function switchEvent(id) {
+  activeId=id;
+  if (id === "HOT") {
+    render(false, null);
+    fetchHotTickers();
+    return;
+  }
+  if (id === "OVERVIEW") {
+    render(false, null);
+    return;
+  }
+  render(aiRunning, null);
+  runAI(false);
+}
+
+async function runAI(force) {
+  if(aiRunning) return;
+  const ex=aiCache[activeId];
+  if(!force && ex && ex.ts && Date.now()-ex.ts < 5*60*1000) { refreshRSI(); return; }
+  aiRunning=true;
+  const btn=document.getElementById("scan-btn");
+  if(btn){btn.textContent="···";btn.disabled=true;}
+  render(true, null);
+  const event=EVENTS.find(e=>e.id===activeId);
+  try {
+    const result=await fetchAIScores(event);
+    aiCache[activeId]={...result,ts:Date.now()};
+    render(false, null);
+    refreshRSI(); // fetch RSI for all returned tickers
+  } catch(e) {
+    render(false, e.message);
+  }
+  aiRunning=false;
+  if(btn){btn.textContent="↺ SCAN";btn.disabled=false;}
+  const sl=document.getElementById("scan-lbl");
+  if(sl) sl.style.display="none";
+}
+
+async function scan(force=false) { await runAI(force); }
+
+function toggleWire() {
+  document.getElementById("wire").classList.toggle("open");
+}
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+setInterval(updateMarket, 1000);
+setInterval(refreshRSI, 60000);
+
+// Force scan immediately — works on both desktop and mobile
+render(false, null);
+setTimeout(() => runAI(true), 300);
+</script>
+</body>
+</html>
