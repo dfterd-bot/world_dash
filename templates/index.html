@@ -497,7 +497,7 @@ const INTENSITY_FALLBACK = {
 // ── OVERVIEW RENDER ──────────────────────────────────────────────────────────
 function renderOverview() {
   const mi = document.getElementById("main-inner");
-  if (!mi) return;
+  if (!mi) { setTimeout(renderOverview, 100); return; }
   const sorted = eventsSortedByIntensity();
 
   let html = `<div style="padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid #1e527a33">
@@ -829,12 +829,18 @@ function toggleWire() {
 }
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
-setInterval(updateMarket, 1000);
-setInterval(refreshRSI, 60000);
+function init() {
+  setInterval(updateMarket, 1000);
+  setInterval(refreshRSI, 60000);
+  render(false, null);
+  setTimeout(() => runAI(false), 500);
+}
 
-// Force scan immediately — works on both desktop and mobile
-render(false, null);
-setTimeout(() => runAI(true), 300);
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", init);
+} else {
+  init();
+}
 </script>
 </body>
 </html>
