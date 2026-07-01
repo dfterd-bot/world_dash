@@ -509,8 +509,13 @@ function renderOverview() {
         <div style="height:100%;width:${intensity}%;background:${iCol};border-radius:2px"></div>
       </div>
       <div style="display:flex;gap:4px;flex-wrap:wrap">
-        ${tickers.slice(0,10).map(sym=>`<span style="font-family:monospace;font-size:9px;color:#94a3b8;background:#0f2a42;padding:1px 5px;border-radius:2px">${sym}</span>`).join("")}
-        ${tickers.length>10?`<span style="font-size:9px;color:#4a8aaa">+${tickers.length-10}</span>`:""}
+        ${ev.sectors ? ev.sectors.flatMap(s => {
+          const arrow = s.dir==="LONG" ? "▲" : s.dir==="SHORT" ? "▼" : "◈";
+          const col   = s.dir==="LONG" ? "#4ade80" : s.dir==="SHORT" ? "#f87171" : "#F59E0B";
+          return s.tickers.slice(0,4).map(sym =>
+            `<span style="font-family:monospace;font-size:9px;color:${col};background:#0f2a42;padding:1px 5px;border-radius:2px;border:1px solid ${col}22">${arrow} ${sym}</span>`
+          );
+        }).slice(0,12).join("") : ""}
       </div>
     </div>`;
   }
