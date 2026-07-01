@@ -432,8 +432,6 @@ function renderHotError(msg) {
 
 function renderHot() {
   if (activeId !== "HOT") return;
-  const el = document.getElementById("main-inner");
-  if (!el) return;
   const tickers = hotCache?.tickers || [];
   let html = `
     <div style="padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid #F59E0B22">
@@ -472,11 +470,10 @@ function renderHot() {
   if (hotCache?.ts) {
     html += `<div style="font-size:8px;color:#1e527a;margin-top:8px">Actualizado ${new Date(hotCache.ts).toLocaleTimeString("es-AR")} · auto-refresh 5min</div>`;
   }
-  el.innerHTML = html;
+  const hmEl = document.getElementById("heatmap");
+  if (hmEl) hmEl.innerHTML = html;
   const tmEl = document.getElementById("top-movers");
   if (tmEl) tmEl.innerHTML = "";
-  const hmEl = document.getElementById("heatmap");
-  if (hmEl) hmEl.innerHTML = "";
 }
 
 // ── SORTED EVENTS BY INTENSITY ───────────────────────────────────────────────
@@ -494,16 +491,28 @@ const INTENSITY_FALLBACK = {
   NATO:50, AI_BOOM:70, CYBER:50, SUPERBOWL:40, BTS:35,
 };
 
+// ── RESET MAIN CONTENT — preserves DOM structure ─────────────────────────────
+function resetMainContent() {
+  const hdr = document.getElementById("ev-hdr");
+  const tm  = document.getElementById("top-movers");
+  const hm  = document.getElementById("heatmap");
+  if (hdr) hdr.innerHTML = "";
+  if (tm)  tm.innerHTML  = "";
+  if (hm)  hm.innerHTML  = "";
+}
+
 // ── OVERVIEW RENDER ──────────────────────────────────────────────────────────
 function renderOverview() {
-  const mi = document.getElementById("main-inner");
-  if (!mi) { setTimeout(renderOverview, 100); return; }
+  const hm = document.getElementById("heatmap");
+  const hdr = document.getElementById("ev-hdr");
+  if (!hm) return;
   const sorted = eventsSortedByIntensity();
-
-  let html = `<div style="padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid #1e527a33">
+  if (hdr) hdr.innerHTML = `<div style="padding-bottom:10px;margin-bottom:4px">
     <div style="font-size:8px;color:#4a8aaa;letter-spacing:3px;margin-bottom:2px">TODOS LOS EPISODIOS</div>
     <div style="font-size:13px;font-weight:700;color:#fff">Vista General · Mayor a Menor Intensidad</div>
   </div>`;
+
+  let html = "";
 
   for (const ev of sorted) {
     const meta      = CAT[ev.cat];
@@ -537,7 +546,7 @@ function renderOverview() {
     </div>`;
   }
 
-  mi.innerHTML = html;
+  hm.innerHTML = html;
   document.getElementById("top-movers").innerHTML = "";
   document.getElementById("heatmap").innerHTML = "";
   renderWire(null);
@@ -756,15 +765,13 @@ function render(loadingAI, error) {
   // Guard: HOT
   if (activeId === "HOT") {
     renderSidebar(); renderTabs(); renderMobilePills(); updateMarket();
-    const mi=document.getElementById("main-inner"); if(mi) mi.innerHTML="";
-    const tm=document.getElementById("top-movers"); if(tm) tm.innerHTML="";
-    const hm=document.getElementById("heatmap"); if(hm) hm.innerHTML="";
+    resetMainContent();
     if (hotCache) renderHot(); else if (!hotRunning) fetchHotTickers();
     return;
   }
-  // Guard: OVERVIEW
   if (activeId === "OVERVIEW") {
     renderSidebar(); renderTabs(); renderMobilePills(); updateMarket();
+    resetMainContent();
     renderOverview();
     return;
   }
