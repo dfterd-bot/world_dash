@@ -359,7 +359,17 @@ def hot():
             elif t["dir"] == "SHORT": t["rsiScore"] = t["rsi"]
             else: t["rsiScore"] = abs(t["rsi"] - 50)
 
-        top4 = sorted(valid, key=lambda x: x["rsiScore"], reverse=True)[:4]
+        # Add score from SCORE_MAP
+        flat_scores = {}
+        for ev_id, scores in SCORE_MAP.items():
+            for sym, sc in scores.items():
+                if sym not in flat_scores or abs(sc) > abs(flat_scores[sym]):
+                    flat_scores[sym] = sc
+
+        for t in valid:
+            t["score"] = flat_scores.get(t["sym"], 0)
+
+        top4 = sorted(valid, key=lambda x: x["rsiScore"], reverse=True)[:5]
 
         return jsonify({"tickers": top4, "total_scanned": len(valid)})
     except Exception as e:
