@@ -621,8 +621,23 @@ function render(loadingAI,error){
 // ── ACTIONS ───────────────────────────────────────────────────────────────────
 function switchEvent(id){
   activeId=id;
-  if(id==="HOT"){render(false,null);fetchHotTickers();return;}
-  if(id==="OVERVIEW"){render(false,null);return;}
+  renderSidebar();
+  renderTabs();
+  renderMobilePills();
+  updateMarket();
+  if(id==="OVERVIEW"){
+    renderOverview();
+    renderWire(null);
+    return;
+  }
+  if(id==="HOT"){
+    document.getElementById("ev-hdr").innerHTML="";
+    document.getElementById("top-movers").innerHTML="";
+    renderWire(null);
+    if(hotCache)renderHot();
+    else fetchHotTickers();
+    return;
+  }
   render(aiRunning,null);
   runAI(false);
 }
@@ -651,10 +666,18 @@ async function runAI(force){
 }
 
 async function scan(force=false){
-  if(activeId==="OVERVIEW"||activeId==="HOT"){
-    // Switch to first event and scan
-    activeId=eventsSortedByIntensity()[0].id;
-    render(aiRunning,null);
+  if(activeId==="HOT"){fetchHotTickers();return;}
+  if(activeId==="OVERVIEW"){
+    // Scan all events silently in background
+    for(const ev of EVENTS){
+      if(!force&&aiCache[ev.id]&&Date.now()-aiCache[ev.id].ts<5*60*1000)continue;
+      try{
+        const result=await fetchAIScores(ev);
+        aiCache[ev.id]={...result,ts:Date.now()};
+      }catch{}
+    }
+    renderOverview();
+    return;
   }
   await runAI(force);
 }
