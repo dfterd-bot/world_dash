@@ -172,6 +172,24 @@ body{background:#154060;color:#fff;font-family:'Inter',system-ui,sans-serif;heig
 
 <script>
 // ── DATA ──────────────────────────────────────────────────────────────────────
+// Backtest metadata (2 años, RSI <= 35, 977 trades)
+const BACKTEST = {
+  HEATWAVE:  {acc:61.7, pnl:3.45, hold:"20d", grade:"A"},
+  HURRICANE: {acc:60.5, pnl:1.94, hold:"20d", grade:"A"},
+  DROUGHT:   {acc:65.8, pnl:3.23, hold:"20d", grade:"A"},
+  FLOOD:     {acc:48.1, pnl:0.78, hold:"5d",  grade:"C"},
+  PANDEMIC:  {acc:36.3, pnl:-3.17,hold:"5d",  grade:"F"},
+  FLU:       {acc:60.0, pnl:2.47, hold:"20d", grade:"A"},
+  HORMUZ:    {acc:59.8, pnl:2.17, hold:"10d", grade:"A"},
+  TAIWAN:    {acc:41.3, pnl:-3.57,hold:"5d",  grade:"F"},
+  NATO:      {acc:31.7, pnl:-1.12,hold:"5d",  grade:"F"},
+  AI_BOOM:   {acc:60.0, pnl:6.77, hold:"5d",  grade:"A"},
+  CYBER:     {acc:47.1, pnl:1.65, hold:"5d",  grade:"C"},
+  SUPERBOWL: {acc:50.0, pnl:1.50, hold:"5d",  grade:"C"},
+  BTS:       {acc:53.2, pnl:-1.36,hold:"20d", grade:"C"},
+};
+const RECOMMENDED = ["HEATWAVE","HURRICANE","DROUGHT","FLU","HORMUZ","AI_BOOM"];
+
 const EVENTS = [
   {id:"HEATWAVE",cat:"CLIMA",label:"Ola de calor",desc:"Temperaturas extremas sostenidas",demandLogic:"Heat wave causes electricity demand surge driving power generation and gas demand"},
   {id:"HURRICANE",cat:"CLIMA",label:"Huracan",desc:"Huracan categoria 3+ en costa EEUU",demandLogic:"Hurricane destroys infrastructure driving generators construction and insurance claims"},
@@ -349,8 +367,15 @@ function renderSidebar(){
     for(const ev of sorted.filter(e=>e.cat===cat)){
       const isA=ev.id===activeId,eAI=aiCache[ev.id],sig=eAI?.signal;
       const bc=sig==="ACTIVE"?"#EF4444":sig==="ELEVATED"?"#F59E0B":"#10B981";
-      html+=`<button class="ev-btn${isA?" active":""}" onclick="switchEvent('${ev.id}')" style="border-left-color:${isA?meta.color:"transparent"}">
-        <div class="ev-title">${ev.label}${sig?`<span class="sig-badge" style="background:${bc}22;color:${bc}">${sig}</span>`:""}</div>
+      const bt=BACKTEST[ev.id];
+      const btColor=bt?.grade==='A'?'#10B981':bt?.grade==='F'?'#EF4444':'transparent';
+      html+=`<button class="ev-btn${isA?" active":""}" onclick="switchEvent('${ev.id}')" style="border-left-color:${isA?meta.color:btColor}">
+        <div class="ev-title">${ev.label}
+          <div style="display:flex;gap:4px;align-items:center">
+            ${bt?`<span style="font-size:7px;color:${bt.grade==='A'?'#10B981':bt.grade==='F'?'#EF4444':'#4a8aaa'}">${bt.acc}%</span>`:''}
+            ${sig?`<span class="sig-badge" style="background:${bc}22;color:${bc}">${sig}</span>`:''}
+          </div>
+        </div>
         <div class="ev-desc-s">${ev.desc}</div>
       </button>`;
     }
@@ -423,6 +448,12 @@ function renderOverview(){
       </div>
       <div style="height:3px;background:#1a3d5c;border-radius:2px;margin-bottom:7px;overflow:hidden">
         <div style="height:100%;width:${intensity}%;background:${ic};border-radius:2px"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+        ${BACKTEST[ev.id] ? `
+          <span style="font-size:8px;padding:1px 6px;border-radius:2px;font-weight:700;background:${BACKTEST[ev.id].grade==='A'?'#10B98122':BACKTEST[ev.id].grade==='F'?'#EF444422':'#F59E0B22'};color:${BACKTEST[ev.id].grade==='A'?'#10B981':BACKTEST[ev.id].grade==='F'?'#EF4444':'#F59E0B'}">${BACKTEST[ev.id].grade==='A'?'✓ RECOMENDADO':BACKTEST[ev.id].grade==='F'?'✗ EVITAR':'~ NEUTRAL'}</span>
+          <span style="font-size:8px;color:#4a8aaa">Acc ${BACKTEST[ev.id].acc}% · +${BACKTEST[ev.id].pnl}% avg · hold ${BACKTEST[ev.id].hold}</span>
+        ` : ''}
       </div>
       <div style="display:flex;gap:4px;flex-wrap:wrap">
         ${sectors.flatMap(s=>{
@@ -503,7 +534,11 @@ function renderEventHeader(event,ai){
     <div style="flex:1">
       <div style="font-size:8px;color:${meta.color};letter-spacing:3px;margin-bottom:3px">${meta.dot} ${meta.label}</div>
       <div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:3px">${event.label}</div>
-      <div style="font-size:10px;color:#4a8aaa;margin-bottom:7px">${event.desc}</div>
+      <div style="font-size:10px;color:#4a8aaa;margin-bottom:5px">${event.desc}</div>
+      ${BACKTEST[event.id] ? `<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;padding:5px 9px;background:${BACKTEST[event.id].grade==='A'?'#10B98111':BACKTEST[event.id].grade==='F'?'#EF444411':'#F59E0B11'};border-radius:4px;border-left:3px solid ${BACKTEST[event.id].grade==='A'?'#10B981':BACKTEST[event.id].grade==='F'?'#EF4444':'#F59E0B'}">
+        <span style="font-size:9px;font-weight:700;color:${BACKTEST[event.id].grade==='A'?'#10B981':BACKTEST[event.id].grade==='F'?'#EF4444':'#F59E0B'}">${BACKTEST[event.id].grade==='A'?'✓ RECOMENDADO':BACKTEST[event.id].grade==='F'?'✗ EVITAR':'~ NEUTRAL'}</span>
+        <span style="font-size:9px;color:#4a8aaa">Backtest 2a: ${BACKTEST[event.id].acc}% accuracy · ${BACKTEST[event.id].pnl>0?'+':''}${BACKTEST[event.id].pnl}% avg P&L · hold óptimo: ${BACKTEST[event.id].hold}</span>
+      </div>` : ''}
       <div style="display:inline-flex;align-items:flex-start;gap:6px;background:#0d2035;border:1px solid #1e527a;border-radius:4px;padding:5px 9px">
         <span style="font-size:8px;color:#3B82F6;letter-spacing:1px;font-weight:700;flex-shrink:0;margin-top:1px">LOGICA</span>
         <span style="font-size:9px;color:#5a8aaa;line-height:1.5">${event.demandLogic}</span>
