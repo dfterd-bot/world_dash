@@ -136,6 +136,87 @@ def fetch_price(symbol):
     meta["_sessionLabel"] = session
     return data
 
+# ── FUENTE 4: StockTwits — sentimiento social en tiempo real ────────────────
+# Solo se llama para los finalistas del top5 (no para todo el universo)
+# para no comerse el rate limit público (~200 req/hora sin auth).
+def fetch_stocktwits_sentiment(symbol):
+    """Retorna {'bullish': bool, 'ratio': float, 'volumen': int} en base a los
+    últimos mensajes con sentimiento etiquetado en StockTwits para el símbolo."""
+    try:
+        url = f"https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            data = json.loads(r.read())
+        msgs = data.get("messages", [])
+        bull = bear = 0
+        for m in msgs:
+            sent = (m.get("entities", {}) or {}).get("sentiment") or {}
+            basic = sent.get("basic")
+            if basic == "Bullish": bull += 1
+            elif basic == "Bearish": bear += 1
+        total = bull + bear
+        if total < 3:  # muestra insuficiente para confiar en el ratio
+            return {"bullish": False, "ratio": None, "volumen": len(msgs)}
+        ratio = bull / total
+        return {"bullish": ratio >= 0.65, "ratio": round(ratio, 2), "volumen": len(msgs)}
+    except Exception as e:
+        print(f"[STOCKTWITS] {symbol} error: {e}")
+        return {"bullish": False, "ratio": None, "volumen": 0}
+
+# ── FUENTE 5: SEC Form 4 — compras de insiders en los últimos 10 días ───────
+_cik_cache = {}
+def _get_cik(symbol):
+    """Mapea ticker→CIK usando el archivo público de la SEC (se cachea en memoria)."""
+    global _cik_cache
+    if not _cik_cache:
+        try:
+            url = "https://www.sec.gov/files/company_tickers.json"
+            req = urllib.request.Request(url, headers={"User-Agent": "WorldDash contact@americancotton.com.ar"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+            for row in data.values():
+                _cik_cache[row["ticker"].upper()] = str(row["cik_str"]).zfill(10)
+        except Exception as e:
+            print(f"[SEC] Error cargando company_tickers: {e}")
+    return _cik_cache.get(symbol.upper())
+
+def fetch_insider_activity(symbol, dias=10):
+    """Busca Form 4 filed en los últimos `dias` días y chequea si hay
+    transactionCode 'P' (compra en mercado abierto) en el documento.
+    Solo se llama para los finalistas del top5 (rate-limit friendly)."""
+    try:
+        cik = _get_cik(symbol)
+        if not cik: return {"insider_buy": False, "n_filings": 0}
+        url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+        req = urllib.request.Request(url, headers={"User-Agent": "WorldDash contact@americancotton.com.ar"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read())
+        recent = data.get("filings", {}).get("recent", {})
+        forms  = recent.get("form", [])
+        dates  = recent.get("filingDate", [])
+        accs   = recent.get("accessionNumber", [])
+        docs   = recent.get("primaryDocument", [])
+        limite = (date.today() - timedelta(days=dias)).isoformat()
+
+        compras = 0
+        cik_int = int(cik)
+        for i, form in enumerate(forms):
+            if form != "4" or dates[i] < limite: continue
+            try:
+                acc_nodash = accs[i].replace("-", "")
+                doc_url = (f"https://www.sec.gov/Archives/edgar/data/"
+                           f"{cik_int}/{acc_nodash}/{docs[i]}")
+                dreq = urllib.request.Request(doc_url, headers={"User-Agent": "WorldDash contact@americancotton.com.ar"})
+                with urllib.request.urlopen(dreq, timeout=6) as dr:
+                    xml_txt = dr.read().decode("utf-8", errors="ignore")
+                if "<transactionCode>P</transactionCode>" in xml_txt:
+                    compras += 1
+            except: continue
+        return {"insider_buy": compras > 0, "n_filings": compras}
+    except Exception as e:
+        print(f"[SEC FORM4] {symbol} error: {e}")
+        return {"insider_buy": False, "n_filings": 0}
+
 def fetch_rss(event_id):
     keywords = [k.lower() for k in KEYWORDS.get(event_id, [])]
     headlines = []
@@ -389,6 +470,21 @@ def hot():
 
         top4 = sorted(valid, key=lambda x: x["rsiScore"], reverse=True)[:5]
 
+        # Enriquecer SOLO los finalistas con StockTwits + SEC Form 4 —
+        # son fuentes externas con rate limit, no tiene sentido pegarle
+        # a las 122 del universo completo, solo a los 5 que van a salir.
+        def _enrich(t):
+            st = fetch_stocktwits_sentiment(t["sym"])
+            ins = fetch_insider_activity(t["sym"])
+            t["stocktwits_bullish"] = st["bullish"]
+            t["stocktwits_ratio"]   = st["ratio"]
+            t["insider_buy"]        = ins["insider_buy"]
+            t["insider_n_filings"]  = ins["n_filings"]
+            return t
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            top4 = list(ex.map(_enrich, top4))
+
         return jsonify({"tickers": top4, "total_scanned": len(valid)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -513,8 +609,26 @@ def status():
     except Exception as e:
         return f"<pre style='color:red;background:#000;padding:20px'>Error: {e}</pre>", 500
 
+import threading
+import time as _time_top
+
+def background_scheduler():
+    """Corre log_signals()+update_exits() cada 15 min sin depender de un
+    cron externo pegándole a /api/log — antes ese endpoint nunca se
+    llamaba solo, así que el historial de performance por episodio
+    quedaba vacío/desactualizado."""
+    while True:
+        try:
+            log_signals()
+            update_exits()
+            print("[SCHEDULER] log_signals + update_exits OK")
+        except Exception as e:
+            print(f"[SCHEDULER ERROR] {e}")
+        _time_top.sleep(900)
+
 if __name__ == "__main__":
     init_db()
+    threading.Thread(target=background_scheduler, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
