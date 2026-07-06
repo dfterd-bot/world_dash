@@ -340,10 +340,28 @@ def hot():
                         ag = (ag*13+(d if d>0 else 0))/14
                         al = (al*13+(abs(d) if d<0 else 0))/14
                     rsi = round(100-(100/(1+ag/al)),1) if al else 100
-                state = meta.get("marketState","CLOSED")
-                session = {"REGULAR":"LIVE","PRE":"PRE","POST":"POST","POSTPOST":"POST"}.get(state,"CLOSED")
+                # Detección de sesión más confiable: marketState en este endpoint
+                # (interval=1d) suele venir desactualizado o directamente mal.
+                # Comparamos el horario real de sesión (currentTradingPeriod, en
+                # timestamps UTC) contra el reloj actual, en vez de confiar en el string.
+                import time as _time
+                now_ts = _time.time()
+                ctp = meta.get("currentTradingPeriod", {}) or {}
+                def _in_period(p):
+                    return bool(p) and p.get("start") and p.get("end") and p["start"] <= now_ts < p["end"]
+                if _in_period(ctp.get("regular")):
+                    session = "LIVE"
+                elif _in_period(ctp.get("pre")):
+                    session = "PRE"
+                elif _in_period(ctp.get("post")):
+                    session = "POST"
+                else:
+                    # fallback al string de Yahoo si no vino currentTradingPeriod
+                    state = meta.get("marketState", "CLOSED")
+                    session = {"REGULAR":"LIVE","PRE":"PRE","POST":"POST","POSTPOST":"POST"}.get(state, "CLOSED")
                 t2 = dict(t)
-                t2.update({"rsi":rsi,"price":price,"chg":chg,"session":session})
+                t2.update({"rsi":rsi,"price":price,"chg":chg,"session":session,
+                           "market_state_raw": meta.get("marketState")})
                 return t2
             except:
                 return None
