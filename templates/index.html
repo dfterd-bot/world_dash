@@ -721,6 +721,11 @@ function toggleWire(){document.getElementById("wire")?.classList.toggle("open");
 // ── INIT ──────────────────────────────────────────────────────────────────────
 setInterval(updateMarket,1000);
 setInterval(refreshRSI,60000);
+// HOT no entraba en refreshRSI (usa hotCache, no aiCache.sectors) — por eso
+// quedaba "como una foto" sin actualizarse solo. fetchHotTickers() ya
+// respeta su propio caché de 5min, así que llamarla cada 60s es seguro:
+// solo vuelve a pegarle a la red cuando el caché realmente expiró.
+setInterval(()=>{ if(activeId==="HOT") fetchHotTickers(); },60000);
 render(false,null);
 
 // Precargar la intensidad REAL de todos los eventos en segundo plano.
