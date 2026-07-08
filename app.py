@@ -45,6 +45,12 @@ def init_db():
                 correct     BOOLEAN
             );
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS event_state (
+                event_id        VARCHAR(50) PRIMARY KEY,
+                last_escalation DATE
+            );
+        """)
         conn.commit()
         cur.close()
         conn.close()
@@ -146,6 +152,52 @@ DEESCALATION_WORDS = [
     "talks resume","agreement reached","calm returns","reopened",
 ]
 
+# ── Decay de intensidad: sin escalada reciente, el evento se enfría solo ────
+# Antes la intensidad quedaba alta "por inercia": si HORMUZ subía a 73 y
+# después el tema desaparecía de las noticias (sin titulares de desescalada
+# explícitos), quedaba en 73 para siempre. Ahora pierde 2 pts/día desde la
+# última escalada detectada (cap -14, o sea el decay se agota en ~1 semana).
+DECAY_PTS_POR_DIA = 2
+DECAY_MAX = 14
+
+def _get_last_escalation(event_id):
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT last_escalation FROM event_state WHERE event_id=%s", (event_id,))
+        row = cur.fetchone(); cur.close(); conn.close()
+        if row and row[0]: return row[0]
+    except Exception as e:
+        print(f"[DECAY get {event_id}] {e}")
+    return None
+
+def _set_last_escalation(event_id, d):
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""INSERT INTO event_state (event_id, last_escalation) VALUES (%s,%s)
+                       ON CONFLICT (event_id) DO UPDATE SET last_escalation=EXCLUDED.last_escalation""",
+                    (event_id, d))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        print(f"[DECAY set {event_id}] {e}")
+
+def intensity_decay(event_id, delta_hoy):
+    """Retorna los puntos de decay a restar. Si hoy hubo escalada (delta>0),
+    se registra la fecha y el decay es 0. Si no, se descuenta según los días
+    transcurridos desde la última escalada registrada. Cualquier error de DB
+    devuelve 0 — el decay es un refinamiento, nunca debe romper el score."""
+    try:
+        hoy = date.today()
+        if delta_hoy > 0:
+            _set_last_escalation(event_id, hoy)
+            return 0
+        ultima = _get_last_escalation(event_id)
+        if not ultima:
+            return 0  # sin historial — no castigar sin datos
+        dias = (hoy - ultima).days
+        return min(DECAY_MAX, max(0, dias * DECAY_PTS_POR_DIA))
+    except Exception:
+        return 0
+
 def headline_intensity_delta(headlines):
     """+/- puntos según escalada/desescalada real en los titulares recientes.
     Frases de escalada fuerte (ej. 'ceasefire is over') priman sobre el
@@ -168,6 +220,60 @@ def headline_intensity_delta(headlines):
             delta -= 8
         # si matchean ambos sin frase fuerte -> ambiguo, no suma (evita ruido)
     return max(-25, min(25, delta))
+
+# ── Clasificador de intensidad con IA (Claude) + fallback a keywords ─────────
+# El matcheo por palabras clave funciona pero es frágil ante titulares
+# creativos. Si hay ANTHROPIC_API_KEY configurada en Railway, se usa Claude
+# (Haiku, barato) para clasificar escalada/desescalada con contexto real.
+# Si no hay key, o el llamado falla, cae automáticamente al método de
+# keywords — NUNCA rompe el endpoint.
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+_ai_delta_cache = {}   # {event_id: (timestamp, delta)} — TTL 15min para no
+                        # pagar un llamado por cada refresh del dashboard
+
+def intensity_delta(event_id, headlines):
+    """Delta de intensidad -25..+25. Intenta IA, cae a keywords si falla."""
+    if not ANTHROPIC_API_KEY or not headlines:
+        return headline_intensity_delta(headlines), "keywords"
+
+    import time as _t
+    cached = _ai_delta_cache.get(event_id)
+    if cached and _t.time() - cached[0] < 900:
+        return cached[1], "ai"
+
+    try:
+        titulares = "\n".join(
+            f"- {h.get('title','')}. {h.get('summary','')[:120]}"
+            for h in headlines[:8])
+        prompt = (
+            f"Evento monitoreado: {event_id}.\n"
+            f"Titulares recientes:\n{titulares}\n\n"
+            "¿Estos titulares indican ESCALADA o DESESCALADA del evento? "
+            "Respondé SOLO un JSON: {\"delta\": N} donde N es un entero entre "
+            "-25 (fuerte desescalada) y 25 (fuerte escalada), 0 si es ambiguo "
+            "o irrelevante. Sin texto adicional.")
+        body = json.dumps({
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 50,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages", data=body,
+            headers={"Content-Type": "application/json",
+                     "x-api-key": ANTHROPIC_API_KEY,
+                     "anthropic-version": "2023-06-01"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
+        texto = "".join(b.get("text","") for b in data.get("content",[])
+                        if b.get("type") == "text")
+        texto = texto.replace("```json","").replace("```","").strip()
+        delta = int(json.loads(texto).get("delta", 0))
+        delta = max(-25, min(25, delta))
+        _ai_delta_cache[event_id] = (_t.time(), delta)
+        return delta, "ai"
+    except Exception as e:
+        print(f"[AI DELTA {event_id}] fallback a keywords: {e}")
+        return headline_intensity_delta(headlines), "keywords"
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def fetch_price(symbol):
@@ -398,8 +504,9 @@ def score(event_id):
         base_intensity = INTENSITY_MAP.get(event_id, 40)
         demand     = DEMAND_SUMMARY.get(event_id, "")
         headlines  = fetch_rss(event_id)
-        delta      = headline_intensity_delta(headlines)
-        intensity  = max(0, min(100, base_intensity + delta))
+        delta, fuente = intensity_delta(event_id, headlines)
+        decay      = intensity_decay(event_id, delta)
+        intensity  = max(0, min(100, base_intensity + delta - decay))
         sectors_out = []
         for sec in sectors:
             tickers_out = [{"sym":sym,"score":scores_raw.get(sym,0),"reason":""} for sym in sec["tickers"]]
@@ -408,6 +515,8 @@ def score(event_id):
         return jsonify({
             "eventIntensity": intensity, "signal": signal,
             "intensityBase": base_intensity, "intensityDelta": delta,
+            "intensityDecay": decay,
+            "intensitySource": fuente,
             "lastSignal": headlines[0]["title"] if headlines else "",
             "demandSummary": demand, "headlines": headlines, "sectors": sectors_out,
         })
