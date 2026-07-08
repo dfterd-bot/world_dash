@@ -467,18 +467,27 @@ def hot():
             sym, t = item
             try:
                 import urllib.request as ur, json as js
-                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=30d"
+                # 15m/5d en vez de 1d/30d — el RSI diario solo se mueve UNA VEZ
+                # POR DÍA (al cerrar la vela), por eso HOT quedaba "como una
+                # foto" toda la sesión. Con velas de 15min el RSI reacciona
+                # de verdad al movimiento intradía.
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=15m&range=5d"
                 req2 = ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
                 with ur.urlopen(req2, timeout=8) as r:
                     data = js.loads(r.read())
                 result = data["chart"]["result"][0]
                 closes = [c for c in result.get("indicators",{}).get("quote",[{}])[0].get("close",[]) if c is not None]
                 meta = result["meta"]
-                prev = closes[-2] if len(closes)>=2 else meta.get("regularMarketPreviousClose") or meta.get("chartPreviousClose")
+                # El % de cambio SIGUE siendo vs. el cierre del día anterior
+                # (no vs. la vela de 15min anterior, que sería otra cosa) —
+                # por eso esto no sale de `closes`, sale de los campos meta.
+                prev = meta.get("regularMarketPreviousClose") or meta.get("chartPreviousClose") \
+                       or (closes[-2] if len(closes)>=2 else None)
                 price = meta.get("regularMarketPrice")
                 if not price or not closes: return None
                 chg = round((price-prev)/prev*100, 2) if prev else 0
-                # RSI(14)
+                # RSI(14) sobre velas de 15min — se recalcula con cada vela nueva,
+                # varias veces por hora, no una vez por día.
                 rsi = None
                 if len(closes) >= 15:
                     gains = losses = 0
