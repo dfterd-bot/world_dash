@@ -9,6 +9,16 @@ from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 
+@app.after_request
+def no_cache_api(response):
+    """Los endpoints /api/* nunca deben cachearse — HOT y los scores dependen
+    de datos en vivo, y el navegador (Safari/iOS en particular) puede cachear
+    fetch() agresivamente sin este header, dejando la UI 'como una foto'
+    aunque el JS pida datos nuevos correctamente."""
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
+
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 # ── DB CONNECTION ─────────────────────────────────────────────────────────────
@@ -424,13 +434,31 @@ def hot():
             "BTS":       [("LONG",["WMT","TGT","AMZN","AAPL","DELL","HPQ","UPS","FDX"]),("WATCH",["NKE","PVH"])],
         }
 
-        # Build dedup universe
+        # Score plano (máximo |score|) por símbolo — se calcula PRIMERO porque
+        # ahora también se usa para resolver qué evento/dirección gana cuando
+        # el mismo ticker aparece en más de un evento (ver bug de abajo).
+        flat_scores = {}
+        for ev_id, scores in SCORE_MAP.items():
+            for sym, sc in scores.items():
+                if sym not in flat_scores or abs(sc) > abs(flat_scores[sym]):
+                    flat_scores[sym] = sc
+
+        # Build dedup universe — antes esto se quedaba con el PRIMER evento que
+        # apareciera en el diccionario (orden arbitrario de Python), lo que
+        # hacía que p.ej. NVDA quedara atrapado como SHORT de TAIWAN (-65) y
+        # jamás se evaluara como LONG de AI_BOOM (90, el score más fuerte de
+        # toda la base). Ahora gana el evento con mayor |score| en SCORE_MAP.
         universe = {}
         for ev_id, secs in UNIVERSE.items():
             for dir_, tickers in secs:
                 for sym in tickers:
-                    if sym not in universe:
-                        universe[sym] = {"sym": sym, "dir": dir_, "event": ev_id}
+                    candidato_abs = abs(SCORE_MAP.get(ev_id, {}).get(sym, 0))
+                    actual = universe.get(sym)
+                    if actual is None or candidato_abs > actual["_score_abs"]:
+                        universe[sym] = {"sym": sym, "dir": dir_, "event": ev_id,
+                                          "_score_abs": candidato_abs}
+        for v in universe.values():
+            v.pop("_score_abs", None)
 
         # Fetch price + calc RSI for all
         import concurrent.futures
@@ -502,12 +530,6 @@ def hot():
             else: t["rsiScore"] = abs(t["rsi"] - 50)
 
         # Add score from SCORE_MAP
-        flat_scores = {}
-        for ev_id, scores in SCORE_MAP.items():
-            for sym, sc in scores.items():
-                if sym not in flat_scores or abs(sc) > abs(flat_scores[sym]):
-                    flat_scores[sym] = sc
-
         for t in valid:
             t["score"] = flat_scores.get(t["sym"], 0)
 
