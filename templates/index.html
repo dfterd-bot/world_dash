@@ -722,15 +722,25 @@ function toggleWire(){document.getElementById("wire")?.classList.toggle("open");
 setInterval(updateMarket,1000);
 setInterval(refreshRSI,60000);
 render(false,null);
-// Auto-load first event in background
-setTimeout(()=>{
-  const first=eventsSortedByIntensity()[0];
-  if(first&&!aiCache[first.id]){
-    const prevId=activeId;
-    activeId=first.id;
-    runAI(false).then(()=>{ activeId=prevId; render(false,null); });
+
+// Precargar la intensidad REAL de todos los eventos en segundo plano.
+// Antes esto solo pasaba si el usuario iba a "Overview" y apretaba "SCAN" —
+// hasta entonces, el orden de las pestañas y el evento auto-cargado al abrir
+// la app usaban el fallback INTENSITY (valores viejos fijos, ya no
+// representativos desde que el backend calcula intensidad dinámica según
+// noticias reales). Esto hace que la app arranque ya con datos reales.
+async function prefetchAllIntensities(){
+  for(const ev of EVENTS){
+    if(aiCache[ev.id]) continue;
+    try{
+      const result=await fetchAIScores(ev);
+      aiCache[ev.id]={...result,ts:Date.now()};
+      // Re-renderizar orden de pestañas a medida que van llegando datos reales
+      if(activeId==="OVERVIEW") renderOverview(); else render(false,null);
+    }catch{}
   }
-},500);
+}
+setTimeout(()=>{ prefetchAllIntensities(); }, 500);
 </script>
 </body>
 </html>
