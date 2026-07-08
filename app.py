@@ -119,6 +119,46 @@ RSS_FEEDS = [
     "https://feeds.bbci.co.uk/news/business/rss.xml",
 ]
 
+# ── Ajuste dinámico de intensidad según el contenido real de las noticias ───
+# INTENSITY_MAP es solo el punto de partida ("baseline") de cada episodio.
+# Antes esto quedaba FIJO para siempre — ahora se le suma/resta según si los
+# titulares más recientes muestran escalada o desescalada real.
+ESCALATION_PHRASES = [
+    "ceasefire is over", "ceasefire ended", "ceasefire collapsed", "truce broken",
+    "resumes strikes", "renewed strikes", "resumed attacks",
+]
+ESCALATION_WORDS = [
+    "strike","strikes","struck","attack","attacked","bomb","bombing","bombed",
+    "explosion","seized","blockade","invasion","missile","killed","clash","offensive",
+]
+DEESCALATION_WORDS = [
+    "ceasefire","truce","peace deal","de-escalate","withdraw",
+    "talks resume","agreement reached","calm returns","reopened",
+]
+
+def headline_intensity_delta(headlines):
+    """+/- puntos según escalada/desescalada real en los titulares recientes.
+    Frases de escalada fuerte (ej. 'ceasefire is over') priman sobre el
+    match genérico de 'ceasefire' como palabra suelta, que sería desescalada
+    engañosa en ese contexto."""
+    delta = 0
+    for h in headlines[:8]:
+        title = (h.get("title","") + " " + h.get("summary","")).lower()
+        # sacar comillas (rectas y curvas) para que "ceasefire is 'over'"
+        # matchee igual que "ceasefire is over"
+        title = title.replace("'", "").replace('"', "").replace("’", "").replace("‘", "")
+        if any(p in title for p in ESCALATION_PHRASES):
+            delta += 10
+            continue
+        esc = any(w in title for w in ESCALATION_WORDS)
+        des = any(w in title for w in DEESCALATION_WORDS)
+        if esc and not des:
+            delta += 8
+        elif des and not esc:
+            delta -= 8
+        # si matchean ambos sin frase fuerte -> ambiguo, no suma (evita ruido)
+    return max(-25, min(25, delta))
+
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def fetch_price(symbol):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=30d"
@@ -345,9 +385,11 @@ def score(event_id):
     try:
         sectors    = SECTOR_MAP.get(event_id, [])
         scores_raw = SCORE_MAP.get(event_id, {})
-        intensity  = INTENSITY_MAP.get(event_id, 40)
+        base_intensity = INTENSITY_MAP.get(event_id, 40)
         demand     = DEMAND_SUMMARY.get(event_id, "")
         headlines  = fetch_rss(event_id)
+        delta      = headline_intensity_delta(headlines)
+        intensity  = max(0, min(100, base_intensity + delta))
         sectors_out = []
         for sec in sectors:
             tickers_out = [{"sym":sym,"score":scores_raw.get(sym,0),"reason":""} for sym in sec["tickers"]]
@@ -355,6 +397,7 @@ def score(event_id):
         signal = "ACTIVE" if intensity>=70 else "ELEVATED" if intensity>=45 else "QUIET"
         return jsonify({
             "eventIntensity": intensity, "signal": signal,
+            "intensityBase": base_intensity, "intensityDelta": delta,
             "lastSignal": headlines[0]["title"] if headlines else "",
             "demandSummary": demand, "headlines": headlines, "sectors": sectors_out,
         })
