@@ -312,7 +312,7 @@ function eventsSortedByIntensity(){
 async function fetchRSI(sym){
   if(rsiCache[sym]&&Date.now()-rsiCache[sym].ts<5*60*1000)return rsiCache[sym];
   try{
-    const r=await fetch("/api/price/"+sym);
+    const r=await fetch("/api/price/"+sym,{cache:"no-store"});
     const d=await r.json();
     const res=d?.chart?.result?.[0];
     if(!res)return null;
@@ -339,7 +339,7 @@ async function fetchRSI(sym){
 }
 
 async function fetchAIScores(event){
-  const res=await fetch("/api/score/"+event.id);
+  const res=await fetch("/api/score/"+event.id,{cache:"no-store"});
   if(!res.ok)throw new Error("HTTP "+res.status);
   const data=await res.json();
   if(data.error)throw new Error(data.error);
@@ -476,7 +476,7 @@ async function fetchHotTickers(){
   const hm=document.getElementById("heatmap");
   if(hm)hm.innerHTML=`<div style="padding:20px 0;display:flex;align-items:center;gap:8px"><div class="ai-dot" style="animation:blink 1s ease 0s infinite"></div><div class="ai-dot" style="animation:blink 1s ease 0.2s infinite"></div><div class="ai-dot" style="animation:blink 1s ease 0.4s infinite"></div><span class="ai-txt">ESCANEANDO UNIVERSO···</span></div>`;
   try{
-    const res=await fetch("/api/hot");
+    const res=await fetch("/api/hot",{cache:"no-store"});
     const data=await res.json();
     hotCache={tickers:data.tickers||[],ts:Date.now()};
     renderHot();
