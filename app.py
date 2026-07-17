@@ -496,17 +496,39 @@ def price(symbol):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ── Cache de intensidad por evento (RSS + IA/keywords) ──────────────────────
+# fetch_rss() pega contra 4 feeds por evento — para 1 evento en
+# /api/score/<id> no pasa nada, pero /api/hot necesita la intensidad de
+# TODOS los eventos que aparecen entre sus candidatos, y sin cache eso son
+# hasta ~13×4 fetches por request. TTL 5min: las noticias no cambian tan
+# rápido como para justificar refetchear en cada refresh del dashboard/bot.
+_intensity_cache = {}   # {event_id: (timestamp, dict)}
+INTENSITY_CACHE_TTL = 300
+
+def get_event_intensity(event_id):
+    import time as _t
+    cached = _intensity_cache.get(event_id)
+    if cached and _t.time() - cached[0] < INTENSITY_CACHE_TTL:
+        return cached[1]
+    base_intensity = INTENSITY_MAP.get(event_id, 40)
+    headlines = fetch_rss(event_id)
+    delta, fuente = intensity_delta(event_id, headlines)
+    decay = intensity_decay(event_id, delta)
+    intensity = max(0, min(100, base_intensity + delta - decay))
+    result = {"intensity": intensity, "base": base_intensity, "delta": delta,
+              "decay": decay, "fuente": fuente, "headlines": headlines}
+    _intensity_cache[event_id] = (_t.time(), result)
+    return result
+
 @app.route("/api/score/<event_id>")
 def score(event_id):
     try:
         sectors    = SECTOR_MAP.get(event_id, [])
         scores_raw = SCORE_MAP.get(event_id, {})
-        base_intensity = INTENSITY_MAP.get(event_id, 40)
         demand     = DEMAND_SUMMARY.get(event_id, "")
-        headlines  = fetch_rss(event_id)
-        delta, fuente = intensity_delta(event_id, headlines)
-        decay      = intensity_decay(event_id, delta)
-        intensity  = max(0, min(100, base_intensity + delta - decay))
+        ei = get_event_intensity(event_id)
+        intensity, base_intensity, delta, decay, fuente, headlines = \
+            ei["intensity"], ei["base"], ei["delta"], ei["decay"], ei["fuente"], ei["headlines"]
         sectors_out = []
         for sec in sectors:
             tickers_out = [{"sym":sym,"score":scores_raw.get(sym,0),"reason":""} for sym in sec["tickers"]]
@@ -525,7 +547,8 @@ def score(event_id):
 
 @app.route("/api/hot")
 def hot():
-    """Returns top 4 tickers ranked by RSI extremity across all events"""
+    """Top tickers rankeados por hotScore = 60% extremo de RSI + 40%
+    intensidad de noticias del evento (ver get_event_intensity)."""
     try:
         UNIVERSE = {
             "HEATWAVE":  [("LONG",["CEG","VST","NRG","AES","ETR","LNG","EQT","AR","LII","CARR"]),("WATCH",["NEE","DUK","SO","AEP"])],
@@ -651,7 +674,28 @@ def hot():
         for t in valid:
             t["score"] = flat_scores.get(t["sym"], 0)
 
-        top4 = sorted(valid, key=lambda x: x["rsiScore"], reverse=True)[:5]
+        # Intensidad de noticias por evento — antes el ranking miraba
+        # SOLO qué tan extremo estaba el RSI, sin importar si el evento que
+        # lo justifica está frío o escalando de verdad ahora mismo. Se
+        # calcula 1 vez POR EVENTO (no por ticker) y en paralelo, con cache
+        # de 5min (ver get_event_intensity), para no multiplicar el costo
+        # de RSS por los ~13 eventos del universo en cada request.
+        eventos_presentes = list({t["event"] for t in valid if t.get("event")})
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(eventos_presentes))) as ex:
+            intens_vals = list(ex.map(lambda ev: get_event_intensity(ev)["intensity"], eventos_presentes))
+        intensidades = dict(zip(eventos_presentes, intens_vals))
+        for t in valid:
+            t["newsIntensity"] = intensidades.get(t.get("event"), 40)
+
+        # Ranking combinado: 60% extremo de RSI (timing técnico) + 40%
+        # intensidad de noticias del evento (contexto real) — antes era
+        # 100% RSI, así que un evento completamente frío en las noticias
+        # podía salir "hot" igual que uno con escalada real esta hora.
+        RSI_WEIGHT, NEWS_WEIGHT = 0.6, 0.4
+        for t in valid:
+            t["hotScore"] = round(t["rsiScore"]*RSI_WEIGHT + t["newsIntensity"]*NEWS_WEIGHT, 1)
+
+        top4 = sorted(valid, key=lambda x: x["hotScore"], reverse=True)[:5]
 
         # Enriquecer SOLO los finalistas con StockTwits + SEC Form 4 —
         # son fuentes externas con rate limit, no tiene sentido pegarle
