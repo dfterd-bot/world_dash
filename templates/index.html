@@ -469,9 +469,9 @@ function renderOverview(){
 
 // ── RENDER HOT ────────────────────────────────────────────────────────────────
 let hotCache=null,hotRunning=false;
-async function fetchHotTickers(){
+async function fetchHotTickers(force=false){
   if(hotRunning)return;
-  if(hotCache&&Date.now()-hotCache.ts<5*60*1000){renderHot();return;}
+  if(!force&&hotCache&&Date.now()-hotCache.ts<5*60*1000){renderHot();return;}
   hotRunning=true;
   const hm=document.getElementById("heatmap");
   if(hm)hm.innerHTML=`<div style="padding:20px 0;display:flex;align-items:center;gap:8px"><div class="ai-dot" style="animation:blink 1s ease 0s infinite"></div><div class="ai-dot" style="animation:blink 1s ease 0.2s infinite"></div><div class="ai-dot" style="animation:blink 1s ease 0.4s infinite"></div><span class="ai-txt">ESCANEANDO UNIVERSO···</span></div>`;
@@ -481,7 +481,7 @@ async function fetchHotTickers(){
     hotCache={tickers:data.tickers||[],ts:Date.now()};
     renderHot();
   }catch(e){
-    if(hm)hm.innerHTML=`<div class="err-row"><span class="err-txt">⚠ ${e.message}</span><button class="retry-btn" onclick="fetchHotTickers()">REINTENTAR</button></div>`;
+    if(hm)hm.innerHTML=`<div class="err-row"><span class="err-txt">⚠ ${e.message}</span><button class="retry-btn" onclick="fetchHotTickers(true)">REINTENTAR</button></div>`;
   }
   hotRunning=false;
 }
@@ -701,7 +701,7 @@ async function runAI(force){
 }
 
 async function scan(force=false){
-  if(activeId==="HOT"){fetchHotTickers();return;}
+  if(activeId==="HOT"){fetchHotTickers(true);return;}   // SCAN fuerza refetch (ignora caché 5min)
   if(activeId==="OVERVIEW"){
     // Scan all events silently in background
     for(const ev of EVENTS){
