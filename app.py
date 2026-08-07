@@ -1,5 +1,6 @@
 from flask import Flask, render_template, jsonify, request
 import urllib.request
+import urllib.parse
 import json
 import os
 import xml.etree.ElementTree as ET
@@ -20,6 +21,7 @@ def no_cache_api(response):
     return response
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+INJECT_TOKEN = os.environ.get("INJECT_TOKEN", "")   # token para /api/inject (sin token, el endpoint queda cerrado)
 
 # ── DB CONNECTION ─────────────────────────────────────────────────────────────
 def get_db():
@@ -49,6 +51,17 @@ def init_db():
             CREATE TABLE IF NOT EXISTS event_state (
                 event_id        VARCHAR(50) PRIMARY KEY,
                 last_escalation DATE
+            );
+        """)
+        # Contenido inyectado manualmente (tweets/notas) que suma como titular
+        # del evento — ver /api/inject y fetch_injected. Caduca por ventana de tiempo.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS injected_signals (
+                id         SERIAL PRIMARY KEY,
+                event_id   VARCHAR(50),
+                title      TEXT,
+                source     VARCHAR(80) DEFAULT 'manual',
+                created_at TIMESTAMP DEFAULT NOW()
             );
         """)
         conn.commit()
@@ -129,10 +142,12 @@ KEYWORDS = {
 }
 
 RSS_FEEDS = [
-    "https://feeds.reuters.com/reuters/businessNews",
-    "https://feeds.reuters.com/reuters/topNews",
-    "https://www.cnbc.com/id/100003114/device/rss/rss.html",
-    "https://feeds.bbci.co.uk/news/business/rss.xml",
+    # Reuters discontinuó su RSS público (feeds.reuters.com estaba muerto).
+    # Feeds generales que SÍ funcionan; el grueso de la señal por-evento ahora
+    # viene de fetch_google_news() (búsqueda automática con las keywords).
+    "https://www.cnbc.com/id/100003114/device/rss/rss.html",   # CNBC business
+    "https://feeds.bbci.co.uk/news/business/rss.xml",          # BBC business
+    "https://feeds.bbci.co.uk/news/world/rss.xml",             # BBC world (geopolítica)
 ]
 
 # ── Ajuste dinámico de intensidad según el contenido real de las noticias ───
@@ -395,6 +410,59 @@ def fetch_rss(event_id):
         if len(headlines) >= 5: break
     return headlines[:5]
 
+def fetch_google_news(event_id, max_items=5):
+    """Feed AUTOMÁTICO por evento vía Google News RSS de BÚSQUEDA. Arma la query
+    con las keywords del evento y trae titulares frescos, rankeados por
+    relevancia, de miles de fuentes (AP, Bloomberg, FT, medios de defensa/ciber,
+    etc.) — sin API key ni pasos manuales. Como la query YA filtra por tema, no
+    hace falta re-matchear keywords (a diferencia de fetch_rss sobre feeds
+    generales). Mismo formato de titular. Nunca rompe: falla → []."""
+    keywords = KEYWORDS.get(event_id, [])
+    if not keywords: return []
+    q = " OR ".join(f'"{k}"' for k in keywords[:5])   # top-5 keywords, entre comillas, OR
+    url = ("https://news.google.com/rss/search?q=" + urllib.parse.quote(q) +
+           "&hl=en-US&gl=US&ceid=US:en")
+    headlines = []
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            root = ET.fromstring(r.read())
+        for item in root.findall(".//item")[:20]:
+            title = (item.find("title").text or "") if item.find("title") is not None else ""
+            desc  = (item.find("description").text or "") if item.find("description") is not None else ""
+            src_el = item.find("source")
+            source = (src_el.text if src_el is not None and src_el.text else "google news")
+            combined = (title + " " + desc).lower()
+            neg = sum(1 for w in ["decline","fall","drop","risk","warn","fear"] if w in combined)
+            pos = sum(1 for w in ["surge","rise","gain","jump","boost","record"] if w in combined)
+            impact = "BEARISH" if neg > pos else "NEUTRAL" if neg == pos else "BULLISH"
+            headlines.append({"title": title[:120], "source": source[:40],
+                              "impact": impact, "summary": desc[:100].strip()})
+            if len(headlines) >= max_items: break
+    except Exception as e:
+        print(f"[google_news {event_id}] {e}")
+    return headlines
+
+def fetch_injected(event_id, ttl_hours=36):
+    """Titulares INYECTADOS manualmente (vía /api/inject) para el evento, dentro
+    de una ventana de ttl_hours. Mismo formato que fetch_rss (title/summary/
+    source/impact) → se mergean con el RSS y los puntúa el MISMO scorer (IA/
+    keywords). Caducan solos por la ventana: no dejan el evento caliente para
+    siempre (además el delta total sigue acotado a +25, así que una inyección
+    es suplementaria, nunca spikea sola)."""
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""SELECT title, source FROM injected_signals
+                       WHERE event_id=%s AND created_at > NOW() - (%s * INTERVAL '1 hour')
+                       ORDER BY created_at DESC LIMIT 5""", (event_id, ttl_hours))
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return [{"title": r["title"], "summary": "",
+                 "source": (r["source"] or "manual") + " (inyectado)", "impact": "HIGH"}
+                for r in rows]
+    except Exception as e:
+        print(f"[fetch_injected {event_id}] {e}")
+        return []
+
 # ── LOG TODAY'S TOP SIGNALS ──────────────────────────────────────────────────
 def log_signals():
     """Called daily — logs top tickers with entry price"""
@@ -496,17 +564,45 @@ def price(symbol):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ── Cache de intensidad por evento (RSS + IA/keywords) ──────────────────────
+# fetch_rss() pega contra 4 feeds por evento — para 1 evento en
+# /api/score/<id> no pasa nada, pero /api/hot necesita la intensidad de
+# TODOS los eventos que aparecen entre sus candidatos, y sin cache eso son
+# hasta ~13×4 fetches por request. TTL 5min: las noticias no cambian tan
+# rápido como para justificar refetchear en cada refresh del dashboard/bot.
+_intensity_cache = {}   # {event_id: (timestamp, dict)}
+INTENSITY_CACHE_TTL = 300
+
+def get_event_intensity(event_id):
+    import time as _t
+    cached = _intensity_cache.get(event_id)
+    if cached and _t.time() - cached[0] < INTENSITY_CACHE_TTL:
+        return cached[1]
+    base_intensity = INTENSITY_MAP.get(event_id, 40)
+    # Fuentes, en orden de prioridad: inyectados (manuales) → Google News por
+    # evento (automático, targeted, fresco) → RSS general (CNBC/BBC). El mismo
+    # scorer IA/keywords los evalúa; el delta sigue acotado a ±25, así que
+    # ninguna fuente spikea sola. Google News hace el trabajo pesado sin que el
+    # usuario toque nada.
+    headlines = (fetch_injected(event_id) + fetch_google_news(event_id)
+                 + fetch_rss(event_id))[:8]
+    delta, fuente = intensity_delta(event_id, headlines)
+    decay = intensity_decay(event_id, delta)
+    intensity = max(0, min(100, base_intensity + delta - decay))
+    result = {"intensity": intensity, "base": base_intensity, "delta": delta,
+              "decay": decay, "fuente": fuente, "headlines": headlines}
+    _intensity_cache[event_id] = (_t.time(), result)
+    return result
+
 @app.route("/api/score/<event_id>")
 def score(event_id):
     try:
         sectors    = SECTOR_MAP.get(event_id, [])
         scores_raw = SCORE_MAP.get(event_id, {})
-        base_intensity = INTENSITY_MAP.get(event_id, 40)
         demand     = DEMAND_SUMMARY.get(event_id, "")
-        headlines  = fetch_rss(event_id)
-        delta, fuente = intensity_delta(event_id, headlines)
-        decay      = intensity_decay(event_id, delta)
-        intensity  = max(0, min(100, base_intensity + delta - decay))
+        ei = get_event_intensity(event_id)
+        intensity, base_intensity, delta, decay, fuente, headlines = \
+            ei["intensity"], ei["base"], ei["delta"], ei["decay"], ei["fuente"], ei["headlines"]
         sectors_out = []
         for sec in sectors:
             tickers_out = [{"sym":sym,"score":scores_raw.get(sym,0),"reason":""} for sym in sec["tickers"]]
@@ -523,9 +619,59 @@ def score(event_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/inject", methods=["POST"])
+def api_inject():
+    """Inyecta contenido (tweet/nota) como titular de un evento → sube su
+    intensidad de forma SUPLEMENTARIA (delta acotado a +25) y con la MISMA
+    corroboración del scorer IA/keywords. Requiere token (env INJECT_TOKEN);
+    sin token configurado el endpoint queda cerrado. Body JSON:
+    {"event_id":"CYBER","text":"...","source":"@cuenta"}. event_id debe ser uno
+    conocido. Lo inyectado caduca solo a las 36h. Invalida el cache para que
+    tome efecto al instante."""
+    token = request.headers.get("X-Inject-Token") or request.args.get("token", "")
+    if not INJECT_TOKEN or token != INJECT_TOKEN:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(force=True, silent=True) or {}
+    event_id = (data.get("event_id") or "").upper().strip()
+    text = (data.get("text") or data.get("title") or "").strip()
+    source = (data.get("source") or "manual").strip()[:80]
+    if event_id not in SCORE_MAP:
+        return jsonify({"error": f"event_id inválido: {event_id}",
+                        "validos": sorted(SCORE_MAP.keys())}), 400
+    if not text:
+        return jsonify({"error": "falta 'text'"}), 400
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("INSERT INTO injected_signals (event_id, title, source) VALUES (%s,%s,%s)",
+                    (event_id, text[:300], source))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    _intensity_cache.pop(event_id, None)   # que /api/hot y /api/score recomputen ya
+    _ai_delta_cache.pop(event_id, None)
+    return jsonify({"ok": True, "event_id": event_id, "text": text[:300], "source": source,
+                    "nota": "Suma como titular del evento (delta ±25, suplementario); caduca a las 36h."})
+
+@app.route("/api/injected")
+def api_injected():
+    """Lista las inyecciones vigentes (últimas 36h) — para verificar qué está activo."""
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""SELECT event_id, title, source, created_at FROM injected_signals
+                       WHERE created_at > NOW() - INTERVAL '36 hours'
+                       ORDER BY created_at DESC LIMIT 50""")
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return jsonify({"injected": [
+            {"event_id": r["event_id"], "title": r["title"], "source": r["source"],
+             "created_at": r["created_at"].isoformat() if r["created_at"] else None}
+            for r in rows]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/hot")
 def hot():
-    """Returns top 4 tickers ranked by RSI extremity across all events"""
+    """Top tickers rankeados por hotScore = 60% extremo de RSI + 40%
+    intensidad de noticias del evento (ver get_event_intensity)."""
     try:
         UNIVERSE = {
             "HEATWAVE":  [("LONG",["CEG","VST","NRG","AES","ETR","LNG","EQT","AR","LII","CARR"]),("WATCH",["NEE","DUK","SO","AEP"])],
@@ -651,7 +797,28 @@ def hot():
         for t in valid:
             t["score"] = flat_scores.get(t["sym"], 0)
 
-        top4 = sorted(valid, key=lambda x: x["rsiScore"], reverse=True)[:5]
+        # Intensidad de noticias por evento — antes el ranking miraba
+        # SOLO qué tan extremo estaba el RSI, sin importar si el evento que
+        # lo justifica está frío o escalando de verdad ahora mismo. Se
+        # calcula 1 vez POR EVENTO (no por ticker) y en paralelo, con cache
+        # de 5min (ver get_event_intensity), para no multiplicar el costo
+        # de RSS por los ~13 eventos del universo en cada request.
+        eventos_presentes = list({t["event"] for t in valid if t.get("event")})
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(eventos_presentes))) as ex:
+            intens_vals = list(ex.map(lambda ev: get_event_intensity(ev)["intensity"], eventos_presentes))
+        intensidades = dict(zip(eventos_presentes, intens_vals))
+        for t in valid:
+            t["newsIntensity"] = intensidades.get(t.get("event"), 40)
+
+        # Ranking combinado: 60% extremo de RSI (timing técnico) + 40%
+        # intensidad de noticias del evento (contexto real) — antes era
+        # 100% RSI, así que un evento completamente frío en las noticias
+        # podía salir "hot" igual que uno con escalada real esta hora.
+        RSI_WEIGHT, NEWS_WEIGHT = 0.6, 0.4
+        for t in valid:
+            t["hotScore"] = round(t["rsiScore"]*RSI_WEIGHT + t["newsIntensity"]*NEWS_WEIGHT, 1)
+
+        top4 = sorted(valid, key=lambda x: x["hotScore"], reverse=True)[:5]
 
         # Enriquecer SOLO los finalistas con StockTwits + SEC Form 4 —
         # son fuentes externas con rate limit, no tiene sentido pegarle
