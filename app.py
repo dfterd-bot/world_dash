@@ -20,6 +20,7 @@ def no_cache_api(response):
     return response
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+INJECT_TOKEN = os.environ.get("INJECT_TOKEN", "")   # token para /api/inject (sin token, el endpoint queda cerrado)
 
 # ── DB CONNECTION ─────────────────────────────────────────────────────────────
 def get_db():
@@ -49,6 +50,17 @@ def init_db():
             CREATE TABLE IF NOT EXISTS event_state (
                 event_id        VARCHAR(50) PRIMARY KEY,
                 last_escalation DATE
+            );
+        """)
+        # Contenido inyectado manualmente (tweets/notas) que suma como titular
+        # del evento — ver /api/inject y fetch_injected. Caduca por ventana de tiempo.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS injected_signals (
+                id         SERIAL PRIMARY KEY,
+                event_id   VARCHAR(50),
+                title      TEXT,
+                source     VARCHAR(80) DEFAULT 'manual',
+                created_at TIMESTAMP DEFAULT NOW()
             );
         """)
         conn.commit()
@@ -395,6 +407,26 @@ def fetch_rss(event_id):
         if len(headlines) >= 5: break
     return headlines[:5]
 
+def fetch_injected(event_id, ttl_hours=36):
+    """Titulares INYECTADOS manualmente (vía /api/inject) para el evento, dentro
+    de una ventana de ttl_hours. Mismo formato que fetch_rss (title/summary/
+    source/impact) → se mergean con el RSS y los puntúa el MISMO scorer (IA/
+    keywords). Caducan solos por la ventana: no dejan el evento caliente para
+    siempre (además el delta total sigue acotado a +25, así que una inyección
+    es suplementaria, nunca spikea sola)."""
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""SELECT title, source FROM injected_signals
+                       WHERE event_id=%s AND created_at > NOW() - (%s * INTERVAL '1 hour')
+                       ORDER BY created_at DESC LIMIT 5""", (event_id, ttl_hours))
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return [{"title": r["title"], "summary": "",
+                 "source": (r["source"] or "manual") + " (inyectado)", "impact": "HIGH"}
+                for r in rows]
+    except Exception as e:
+        print(f"[fetch_injected {event_id}] {e}")
+        return []
+
 # ── LOG TODAY'S TOP SIGNALS ──────────────────────────────────────────────────
 def log_signals():
     """Called daily — logs top tickers with entry price"""
@@ -511,7 +543,9 @@ def get_event_intensity(event_id):
     if cached and _t.time() - cached[0] < INTENSITY_CACHE_TTL:
         return cached[1]
     base_intensity = INTENSITY_MAP.get(event_id, 40)
-    headlines = fetch_rss(event_id)
+    # Inyectados (manuales) PRIMERO + RSS. El mismo scorer los evalúa; el delta
+    # sigue acotado a ±25, así que lo inyectado es suplementario, no dominante.
+    headlines = (fetch_injected(event_id) + fetch_rss(event_id))[:8]
     delta, fuente = intensity_delta(event_id, headlines)
     decay = intensity_decay(event_id, delta)
     intensity = max(0, min(100, base_intensity + delta - decay))
@@ -542,6 +576,55 @@ def score(event_id):
             "lastSignal": headlines[0]["title"] if headlines else "",
             "demandSummary": demand, "headlines": headlines, "sectors": sectors_out,
         })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/inject", methods=["POST"])
+def api_inject():
+    """Inyecta contenido (tweet/nota) como titular de un evento → sube su
+    intensidad de forma SUPLEMENTARIA (delta acotado a +25) y con la MISMA
+    corroboración del scorer IA/keywords. Requiere token (env INJECT_TOKEN);
+    sin token configurado el endpoint queda cerrado. Body JSON:
+    {"event_id":"CYBER","text":"...","source":"@cuenta"}. event_id debe ser uno
+    conocido. Lo inyectado caduca solo a las 36h. Invalida el cache para que
+    tome efecto al instante."""
+    token = request.headers.get("X-Inject-Token") or request.args.get("token", "")
+    if not INJECT_TOKEN or token != INJECT_TOKEN:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(force=True, silent=True) or {}
+    event_id = (data.get("event_id") or "").upper().strip()
+    text = (data.get("text") or data.get("title") or "").strip()
+    source = (data.get("source") or "manual").strip()[:80]
+    if event_id not in SCORE_MAP:
+        return jsonify({"error": f"event_id inválido: {event_id}",
+                        "validos": sorted(SCORE_MAP.keys())}), 400
+    if not text:
+        return jsonify({"error": "falta 'text'"}), 400
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("INSERT INTO injected_signals (event_id, title, source) VALUES (%s,%s,%s)",
+                    (event_id, text[:300], source))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    _intensity_cache.pop(event_id, None)   # que /api/hot y /api/score recomputen ya
+    _ai_delta_cache.pop(event_id, None)
+    return jsonify({"ok": True, "event_id": event_id, "text": text[:300], "source": source,
+                    "nota": "Suma como titular del evento (delta ±25, suplementario); caduca a las 36h."})
+
+@app.route("/api/injected")
+def api_injected():
+    """Lista las inyecciones vigentes (últimas 36h) — para verificar qué está activo."""
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""SELECT event_id, title, source, created_at FROM injected_signals
+                       WHERE created_at > NOW() - INTERVAL '36 hours'
+                       ORDER BY created_at DESC LIMIT 50""")
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return jsonify({"injected": [
+            {"event_id": r["event_id"], "title": r["title"], "source": r["source"],
+             "created_at": r["created_at"].isoformat() if r["created_at"] else None}
+            for r in rows]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
