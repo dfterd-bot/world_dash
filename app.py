@@ -1,5 +1,6 @@
 from flask import Flask, render_template, jsonify, request
 import urllib.request
+import urllib.parse
 import json
 import os
 import xml.etree.ElementTree as ET
@@ -141,10 +142,12 @@ KEYWORDS = {
 }
 
 RSS_FEEDS = [
-    "https://feeds.reuters.com/reuters/businessNews",
-    "https://feeds.reuters.com/reuters/topNews",
-    "https://www.cnbc.com/id/100003114/device/rss/rss.html",
-    "https://feeds.bbci.co.uk/news/business/rss.xml",
+    # Reuters discontinuó su RSS público (feeds.reuters.com estaba muerto).
+    # Feeds generales que SÍ funcionan; el grueso de la señal por-evento ahora
+    # viene de fetch_google_news() (búsqueda automática con las keywords).
+    "https://www.cnbc.com/id/100003114/device/rss/rss.html",   # CNBC business
+    "https://feeds.bbci.co.uk/news/business/rss.xml",          # BBC business
+    "https://feeds.bbci.co.uk/news/world/rss.xml",             # BBC world (geopolítica)
 ]
 
 # ── Ajuste dinámico de intensidad según el contenido real de las noticias ───
@@ -407,6 +410,39 @@ def fetch_rss(event_id):
         if len(headlines) >= 5: break
     return headlines[:5]
 
+def fetch_google_news(event_id, max_items=5):
+    """Feed AUTOMÁTICO por evento vía Google News RSS de BÚSQUEDA. Arma la query
+    con las keywords del evento y trae titulares frescos, rankeados por
+    relevancia, de miles de fuentes (AP, Bloomberg, FT, medios de defensa/ciber,
+    etc.) — sin API key ni pasos manuales. Como la query YA filtra por tema, no
+    hace falta re-matchear keywords (a diferencia de fetch_rss sobre feeds
+    generales). Mismo formato de titular. Nunca rompe: falla → []."""
+    keywords = KEYWORDS.get(event_id, [])
+    if not keywords: return []
+    q = " OR ".join(f'"{k}"' for k in keywords[:5])   # top-5 keywords, entre comillas, OR
+    url = ("https://news.google.com/rss/search?q=" + urllib.parse.quote(q) +
+           "&hl=en-US&gl=US&ceid=US:en")
+    headlines = []
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            root = ET.fromstring(r.read())
+        for item in root.findall(".//item")[:20]:
+            title = (item.find("title").text or "") if item.find("title") is not None else ""
+            desc  = (item.find("description").text or "") if item.find("description") is not None else ""
+            src_el = item.find("source")
+            source = (src_el.text if src_el is not None and src_el.text else "google news")
+            combined = (title + " " + desc).lower()
+            neg = sum(1 for w in ["decline","fall","drop","risk","warn","fear"] if w in combined)
+            pos = sum(1 for w in ["surge","rise","gain","jump","boost","record"] if w in combined)
+            impact = "BEARISH" if neg > pos else "NEUTRAL" if neg == pos else "BULLISH"
+            headlines.append({"title": title[:120], "source": source[:40],
+                              "impact": impact, "summary": desc[:100].strip()})
+            if len(headlines) >= max_items: break
+    except Exception as e:
+        print(f"[google_news {event_id}] {e}")
+    return headlines
+
 def fetch_injected(event_id, ttl_hours=36):
     """Titulares INYECTADOS manualmente (vía /api/inject) para el evento, dentro
     de una ventana de ttl_hours. Mismo formato que fetch_rss (title/summary/
@@ -543,9 +579,13 @@ def get_event_intensity(event_id):
     if cached and _t.time() - cached[0] < INTENSITY_CACHE_TTL:
         return cached[1]
     base_intensity = INTENSITY_MAP.get(event_id, 40)
-    # Inyectados (manuales) PRIMERO + RSS. El mismo scorer los evalúa; el delta
-    # sigue acotado a ±25, así que lo inyectado es suplementario, no dominante.
-    headlines = (fetch_injected(event_id) + fetch_rss(event_id))[:8]
+    # Fuentes, en orden de prioridad: inyectados (manuales) → Google News por
+    # evento (automático, targeted, fresco) → RSS general (CNBC/BBC). El mismo
+    # scorer IA/keywords los evalúa; el delta sigue acotado a ±25, así que
+    # ninguna fuente spikea sola. Google News hace el trabajo pesado sin que el
+    # usuario toque nada.
+    headlines = (fetch_injected(event_id) + fetch_google_news(event_id)
+                 + fetch_rss(event_id))[:8]
     delta, fuente = intensity_delta(event_id, headlines)
     decay = intensity_decay(event_id, delta)
     intensity = max(0, min(100, base_intensity + delta - decay))
