@@ -697,8 +697,18 @@ def get_surprise_events():
         if upside is None:
             continue
         bull = c["chg"] >= 0
-        if bull and upside < VAL_BARATO:   continue
-        if (not bull) and upside > VAL_CARO: continue
+        roe = f.get("roe")
+        if bull:
+            # Bull DURO: tiene que ser RENTABLE (ROE presente y > 0) y además
+            # barato/prometedor. Un forward PE positivo NO alcanza si la empresa
+            # pierde plata — ese era el caso NIQ (fwd PE 13 pero ROE −38%, sin
+            # ganancias). Sin ROE o ROE<=0 ⇒ fuera del bull (fail-closed).
+            if roe is None or roe <= 0:  continue
+            if upside < VAL_BARATO:      continue
+        else:
+            # Bear: cayendo Y caro/no-rentable (upside bajo). La no-rentabilidad
+            # baja el upside sola, así que un solo umbral cubre ambos.
+            if upside > VAL_CARO:        continue
         est = "barato" if upside >= VAL_BARATO else "caro" if upside <= VAL_CARO else "equil"
         rv = f" · vol x{c['relvol']}" if c.get("relvol") else ""
         xs = " · 2 fuentes" if c["n_src"] >= 2 else ""
