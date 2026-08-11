@@ -609,6 +609,59 @@ def _surprise_score(chg, relvol, n_src):
     xs  = 25 if n_src >= 2 else 8                              # en ambas listas ⇒ +25
     return int(max(0, min(100, 40 + mov * 0.5 + rv + xs - 10)))
 
+# Umbrales de valuación (mismo criterio que el bot): upside 0..1 combinando
+# PE/PEG/ROE. >=BARATO ⇒ barato/prometedor (apto bull); <=CARO ⇒ caro (apto bear);
+# la zona muerta del medio se descarta de ambos lados (eso da la agudeza).
+VAL_BARATO, VAL_CARO = 0.50, 0.40
+_fund_cache = {}          # {sym: (ts, {pe,peg,roe})} — TTL 1h
+_fund_lock = threading.Lock()
+
+def _fetch_fundamentals(sym):
+    """PE (forward, fallback trailing), PEG y ROE de Yahoo quoteSummary. Cache 1h."""
+    with _fund_lock:
+        c = _fund_cache.get(sym)
+        if c and time.time() - c[0] < 3600:
+            return c[1]
+    out = {"pe": None, "peg": None, "roe": None}
+    opener, crumb = _get_yahoo_auth()
+    if opener and crumb:
+        try:
+            url = (f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}"
+                   f"?modules=summaryDetail,defaultKeyStatistics,financialData&crumb={urllib.parse.quote(crumb)}")
+            d = json.loads(opener.open(urllib.request.Request(url, headers={"User-Agent": YAHOO_UA}), timeout=10).read())
+            r = d["quoteSummary"]["result"][0]
+            sd = r.get("summaryDetail") or {}; ks = r.get("defaultKeyStatistics") or {}; fd = r.get("financialData") or {}
+            def g(o, k):
+                v = o.get(k)
+                return v.get("raw") if isinstance(v, dict) else v
+            out = {"pe":  g(sd, "forwardPE") or g(ks, "forwardPE") or g(sd, "trailingPE"),
+                   "peg": g(ks, "pegRatio") if g(ks, "pegRatio") is not None else g(ks, "trailingPegRatio"),
+                   "roe": g(fd, "returnOnEquity")}
+        except Exception as e:
+            print(f"[fund {sym}] {e}")
+    with _fund_lock:
+        _fund_cache[sym] = (time.time(), out)
+    return out
+
+def _val_upside(pe, peg, roe):
+    """0..1 combinando PE/PEG/ROE (equal weight de lo disponible). PE<=0
+    (sin ganancias) y ROE negativo puntúan 0. None si no hay ningún dato."""
+    comps = []
+    if pe is not None:
+        comps.append(max(0.0, min(1.0, (30 - pe) / 30)) if pe > 0 else 0.0)
+    if peg is not None and peg > 0:
+        comps.append(max(0.0, min(1.0, (2 - peg) / 2)))
+    if roe is not None:
+        comps.append(max(0.0, min(1.0, roe / 0.40)))
+    return sum(comps) / len(comps) if comps else None
+
+def _fmt_val(f):
+    parts = []
+    if f.get("pe")  is not None: parts.append(f"PE {round(f['pe'],1)}")
+    if f.get("peg") is not None: parts.append(f"PEG {round(f['peg'],2)}")
+    if f.get("roe") is not None: parts.append(f"ROE {round(f['roe']*100)}%")
+    return " ".join(parts) or "s/fund"
+
 def get_surprise_events():
     """SORPRESA = radar de ATENCIÓN INUSUAL (Yahoo trending + StockTwits),
     enriquecido con precio/%/relvol. NO usa el LLM ni los eventos predefinidos →
@@ -619,32 +672,50 @@ def get_surprise_events():
             return _surprise_cache["data"]
     counts = fetch_trending_symbols()
     quotes = _yahoo_quotes(list(counts.keys()))
-    rows = []
+    cands = []
     for sym, n in counts.items():
         q = quotes.get(sym)
         if not q or not q["price"] or q.get("mcap", 0) < 300_000_000:   # sin ilíquidos/micro
             continue
-        rows.append({"sym": sym, "chg": q["chg"], "price": q["price"],
-                     "relvol": q.get("relvol"), "n_src": n,
-                     "surp": _surprise_score(q["chg"], q.get("relvol"), n)})
-    rows.sort(key=lambda r: -r["surp"])
-    rows = rows[:12]
-    def _mk(r, dir_):
-        rv = f" · vol x{r['relvol']}" if r.get("relvol") else ""
-        xs = " · 2 fuentes" if r["n_src"] >= 2 else ""
-        return {"sym": r["sym"], "score": (r["surp"] if dir_ == "LONG" else -r["surp"]),
-                "reason": f"{'+' if r['chg'] >= 0 else ''}{r['chg']}%{rv}{xs}",
-                "price": r["price"], "chg": r["chg"]}
-    up = [_mk(r, "LONG") for r in rows if r["chg"] >= 0]
-    dn = [_mk(r, "SHORT") for r in rows if r["chg"] < 0]
+        cands.append({"sym": sym, "chg": q["chg"], "price": q["price"],
+                      "relvol": q.get("relvol"), "n_src": n,
+                      "surp": _surprise_score(q["chg"], q.get("relvol"), n)})
+    # Acota por surprise ANTES de pedir fundamentals (1 llamada por ticker).
+    cands.sort(key=lambda r: -r["surp"])
+    cands = cands[:24]
+    funds = {}
+    if cands:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            for c, f in zip(cands, ex.map(lambda c: _fetch_fundamentals(c["sym"]), cands)):
+                funds[c["sym"]] = f
+    # FILTRO DE VALUACIÓN (la agudeza pedida): bull sólo si barato/prometedor
+    # (upside>=BARATO), bear sólo si caro (upside<=CARO). Sin fundamentals ⇒ fuera.
+    up, dn, usados = [], [], []
+    for c in cands:
+        f = funds.get(c["sym"]) or {}
+        upside = _val_upside(f.get("pe"), f.get("peg"), f.get("roe"))
+        if upside is None:
+            continue
+        bull = c["chg"] >= 0
+        if bull and upside < VAL_BARATO:   continue
+        if (not bull) and upside > VAL_CARO: continue
+        est = "barato" if upside >= VAL_BARATO else "caro" if upside <= VAL_CARO else "equil"
+        rv = f" · vol x{c['relvol']}" if c.get("relvol") else ""
+        xs = " · 2 fuentes" if c["n_src"] >= 2 else ""
+        item = {"sym": c["sym"], "score": (c["surp"] if bull else -c["surp"]),
+                "reason": f"{'+' if c['chg'] >= 0 else ''}{c['chg']}% · {_fmt_val(f)} · {est}{rv}{xs}",
+                "price": c["price"], "chg": c["chg"]}
+        (up if bull else dn).append(item)
+        usados.append(c["surp"])
+    up = up[:8]; dn = dn[:8]
     sectors = []
-    if up: sectors.append({"name": "Subiendo fuerte", "dir": "LONG", "tickers": up})
-    if dn: sectors.append({"name": "Cayendo fuerte", "dir": "SHORT", "tickers": dn})
+    if up: sectors.append({"name": "Demandados + baratos/prometedores", "dir": "LONG", "tickers": up})
+    if dn: sectors.append({"name": "Cayendo + caros", "dir": "SHORT", "tickers": dn})
     events = []
     if sectors:
-        inten = min(100, int(sum(r["surp"] for r in rows) / max(1, len(rows))))
-        events = [{"title": "Atención inusual ahora", "intensity": inten,
-                   "summary": "Tickers con volumen/buzz anormal — fuera del radar de eventos de HOT",
+        inten = min(100, int(sum(usados) / max(1, len(usados))))
+        events = [{"title": "Atención inusual + valuación a favor", "intensity": inten,
+                   "summary": "Trending con PE/PEG/ROE a favor: bull barato/prometedor · bear caro",
                    "sectors": sectors}]
     with _surprise_lock:
         _surprise_cache.update({"ts": time.time(), "data": events})
