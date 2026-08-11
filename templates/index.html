@@ -388,9 +388,10 @@ function renderMobilePills(){
   if(!el||window.innerWidth>768){if(el)el.style.display="none";return;}
   el.style.display="block";
   const sorted=eventsSortedByIntensity();
-  const isOv=activeId==="OVERVIEW",isHot=activeId==="HOT";
+  const isOv=activeId==="OVERVIEW",isHot=activeId==="HOT",isSurp=activeId==="SURPRISE";
   let html=`<span onclick="switchEvent('OVERVIEW')" style="display:inline-block;margin-right:5px;padding:4px 9px;border-radius:12px;font-size:9px;cursor:pointer;font-weight:${isOv?700:400};background:${isOv?"#7dd3fc22":"#1a3d5c"};color:${isOv?"#7dd3fc":"#4a8aaa"};border:1px solid ${isOv?"#7dd3fc":"#1e527a"}">≡ OVERVIEW</span>`;
   html+=`<span onclick="switchEvent('HOT')" style="display:inline-block;margin-right:5px;padding:4px 9px;border-radius:12px;font-size:9px;cursor:pointer;font-weight:${isHot?700:400};background:${isHot?"#F59E0B22":"#1a3d5c"};color:${isHot?"#F59E0B":"#4a8aaa"};border:1px solid ${isHot?"#F59E0B":"#1e527a"}">🔥 HOT</span>`;
+  html+=`<span onclick="switchEvent('SURPRISE')" style="display:inline-block;margin-right:5px;padding:4px 9px;border-radius:12px;font-size:9px;cursor:pointer;font-weight:${isSurp?700:400};background:${isSurp?"#A855F722":"#1a3d5c"};color:${isSurp?"#A855F7":"#4a8aaa"};border:1px solid ${isSurp?"#A855F7":"#1e527a"}">⚡ SORPRESA</span>`;
   for(const ev of sorted){
     const meta=CAT[ev.cat],isA=ev.id===activeId;
     html+=`<span onclick="switchEvent('${ev.id}')" style="display:inline-block;margin-right:5px;padding:4px 9px;border-radius:12px;font-size:9px;cursor:pointer;font-weight:${isA?700:400};background:${isA?meta.color+"22":"#1a3d5c"};color:${isA?meta.color:"#4a8aaa"};border:1px solid ${isA?meta.color:"#1e527a"}">${meta.dot} ${ev.label}</span>`;
@@ -402,9 +403,10 @@ function renderTabs(){
   const el=document.getElementById("tabs");
   if(!el)return;
   const sorted=eventsSortedByIntensity();
-  const isOv=activeId==="OVERVIEW",isHot=activeId==="HOT";
+  const isOv=activeId==="OVERVIEW",isHot=activeId==="HOT",isSurp=activeId==="SURPRISE";
   let html=`<button class="tab-btn${isOv?" active":""}" onclick="switchEvent('OVERVIEW')" style="border-top-color:${isOv?"#7dd3fc":"transparent"}"><span class="tab-num" style="color:${isOv?"#fff":"#4a8aaa"}">≡</span><span class="tab-name" style="color:${isOv?"#7dd3fc":"#4a8aaa"}">OVERVIEW</span></button>`;
   html+=`<button class="tab-btn${isHot?" active":""}" onclick="switchEvent('HOT')" style="border-top-color:${isHot?"#F59E0B":"transparent"}"><span class="tab-num" style="color:${isHot?"#F59E0B":"#4a8aaa"}">🔥</span><span class="tab-name" style="color:${isHot?"#F59E0B":"#4a8aaa"}">HOT</span></button>`;
+  html+=`<button class="tab-btn${isSurp?" active":""}" onclick="switchEvent('SURPRISE')" style="border-top-color:${isSurp?"#A855F7":"transparent"}"><span class="tab-num" style="color:${isSurp?"#A855F7":"#4a8aaa"}">⚡</span><span class="tab-name" style="color:${isSurp?"#A855F7":"#4a8aaa"}">SORPRESA</span></button>`;
   sorted.forEach((ev,i)=>{
     const meta=CAT[ev.cat],isA=ev.id===activeId,eAI=aiCache[ev.id];
     html+=`<button class="tab-btn${isA?" active":""}" onclick="switchEvent('${ev.id}')" style="border-top-color:${isA?meta.color:"transparent"}">
@@ -469,9 +471,9 @@ function renderOverview(){
 
 // ── RENDER HOT ────────────────────────────────────────────────────────────────
 let hotCache=null,hotRunning=false;
-async function fetchHotTickers(){
+async function fetchHotTickers(force=false){
   if(hotRunning)return;
-  if(hotCache&&Date.now()-hotCache.ts<5*60*1000){renderHot();return;}
+  if(!force&&hotCache&&Date.now()-hotCache.ts<5*60*1000){renderHot();return;}
   hotRunning=true;
   const hm=document.getElementById("heatmap");
   if(hm)hm.innerHTML=`<div style="padding:20px 0;display:flex;align-items:center;gap:8px"><div class="ai-dot" style="animation:blink 1s ease 0s infinite"></div><div class="ai-dot" style="animation:blink 1s ease 0.2s infinite"></div><div class="ai-dot" style="animation:blink 1s ease 0.4s infinite"></div><span class="ai-txt">ESCANEANDO UNIVERSO···</span></div>`;
@@ -481,7 +483,7 @@ async function fetchHotTickers(){
     hotCache={tickers:data.tickers||[],ts:Date.now()};
     renderHot();
   }catch(e){
-    if(hm)hm.innerHTML=`<div class="err-row"><span class="err-txt">⚠ ${e.message}</span><button class="retry-btn" onclick="fetchHotTickers()">REINTENTAR</button></div>`;
+    if(hm)hm.innerHTML=`<div class="err-row"><span class="err-txt">⚠ ${e.message}</span><button class="retry-btn" onclick="fetchHotTickers(true)">REINTENTAR</button></div>`;
   }
   hotRunning=false;
 }
@@ -522,6 +524,63 @@ function renderHot(){
     </div>`;
   });
   if(!tickers.length)html=`<div style="padding:20px 0;font-size:10px;color:#4a8aaa">Sin datos · presioná SCAN</div>`;
+  hm.innerHTML=html;
+}
+
+// ── RENDER SORPRESA (eventos imprevistos → sectores en tiempo real) ────────────
+let surpriseCache=null,surpriseRunning=false;
+async function fetchSurprise(force=false){
+  if(surpriseRunning)return;
+  if(!force&&surpriseCache&&Date.now()-surpriseCache.ts<10*60*1000){renderSurprise();return;}
+  surpriseRunning=true;
+  const hdr=document.getElementById("ev-hdr");
+  if(hdr&&!surpriseCache)hdr.innerHTML=`<div style="font-size:8px;color:#A855F7;letter-spacing:3px;margin-bottom:3px">⚡ SORPRESA</div><div style="font-size:13px;color:#7dd3fc">Detectando eventos trending···</div>`;
+  try{
+    const res=await fetch("/api/surprise",{cache:"no-store"});
+    if(!res.ok)throw new Error("HTTP "+res.status);
+    const data=await res.json();
+    surpriseCache={events:data.events||[],has_ai:data.has_ai!==false,ts:Date.now()};
+    renderSurprise();
+  }catch(e){
+    const hm=document.getElementById("heatmap");
+    if(hm)hm.innerHTML=`<div class="err-row"><span class="err-txt">⚠ ${e.message}</span><button class="retry-btn" onclick="fetchSurprise(true)">REINTENTAR</button></div>`;
+  }
+  surpriseRunning=false;
+}
+function renderSurprise(){
+  if(activeId!=="SURPRISE")return;
+  const hm=document.getElementById("heatmap");
+  const hdr=document.getElementById("ev-hdr");
+  const tm=document.getElementById("top-movers");
+  if(!hm)return;
+  if(tm)tm.innerHTML="";
+  const c=surpriseCache,events=c?.events||[];
+  if(hdr)hdr.innerHTML=`<div style="font-size:8px;color:#A855F7;letter-spacing:3px;margin-bottom:3px">⚡ SORPRESA</div><div style="font-size:14px;font-weight:700;color:#fff">Eventos imprevistos · sectores en tiempo real</div>`;
+  if(c&&c.has_ai===false){
+    hm.innerHTML=`<div style="padding:16px;background:#2a1a3a;border:1px solid #A855F7;border-radius:8px;font-size:11px;color:#d8b4fe">⚡ Falta configurar <b>ANTHROPIC_API_KEY</b> en Railway.<br><span style="color:#9a7bb8">Sin la IA no se pueden mapear eventos nuevos a sectores. Seteala y esta solapa cobra vida.</span></div>`;
+    return;
+  }
+  if(!events.length){
+    hm.innerHTML=`<div style="padding:20px 0;font-size:10px;color:#4a8aaa">Sin eventos sorpresa market-relevant ahora · presioná SCAN</div>`;
+    return;
+  }
+  let html="";
+  events.forEach(ev=>{
+    const inten=ev.intensity||0,iC=inten>=70?"#EF4444":inten>=45?"#F59E0B":"#10B981";
+    html+=`<div style="background:#1a1030;border:1px solid #4a2a6a;border-left:3px solid #A855F7;border-radius:8px;padding:12px 14px;margin-bottom:10px">`;
+    html+=`<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px"><div style="font-size:14px;font-weight:800;color:#e9d5ff">${ev.title||"Evento"}</div><span style="font-size:9px;color:${iC};font-family:monospace;white-space:nowrap">◉ ${inten}</span></div>`;
+    if(ev.summary)html+=`<div style="font-size:10px;color:#9a7bb8;margin-top:2px">${ev.summary}</div>`;
+    (ev.sectors||[]).forEach(s=>{
+      const dC=s.dir==="LONG"?"#4ade80":"#f87171",arr=s.dir==="LONG"?"▲":"▼";
+      html+=`<div style="margin-top:8px"><div style="font-size:9px;color:${dC};letter-spacing:1px;margin-bottom:3px">${arr} ${s.dir} · ${s.name}</div>`;
+      (s.tickers||[]).forEach(t=>{
+        const sc=t.score||0;
+        html+=`<div style="display:flex;justify-content:space-between;align-items:center;background:#0f1730;border-radius:5px;padding:6px 9px;margin-bottom:3px"><span style="font-size:12px;font-weight:700;color:#fff;font-family:monospace">${t.sym}</span><span style="font-size:9px;color:#4a8aaa;font-family:monospace">${t.reason||""}</span><span style="font-size:13px;font-weight:800;font-family:monospace;color:${dC}">${arr} ${Math.abs(sc)}</span></div>`;
+      });
+      html+=`</div>`;
+    });
+    html+=`</div>`;
+  });
   hm.innerHTML=html;
 }
 
@@ -629,6 +688,7 @@ function render(loadingAI,error){
 
   if(activeId==="OVERVIEW"){renderOverview();renderWire(null);return;}
   if(activeId==="HOT"){renderWire(null);if(hotCache)renderHot();return;}
+  if(activeId==="SURPRISE"){renderWire(null);renderSurprise();return;}
 
   const event=EVENTS.find(e=>e.id===activeId);
   if(!event)return;
@@ -673,6 +733,13 @@ function switchEvent(id){
     else fetchHotTickers();
     return;
   }
+  if(id==="SURPRISE"){
+    document.getElementById("top-movers").innerHTML="";
+    renderWire(null);
+    if(surpriseCache)renderSurprise();
+    else fetchSurprise();
+    return;
+  }
   render(aiRunning,null);
   runAI(false);
 }
@@ -701,7 +768,8 @@ async function runAI(force){
 }
 
 async function scan(force=false){
-  if(activeId==="HOT"){fetchHotTickers();return;}
+  if(activeId==="HOT"){fetchHotTickers(true);return;}   // SCAN fuerza refetch (ignora caché 5min)
+  if(activeId==="SURPRISE"){fetchSurprise(true);return;}
   if(activeId==="OVERVIEW"){
     // Scan all events silently in background
     for(const ev of EVENTS){
@@ -725,7 +793,7 @@ setInterval(refreshRSI,60000);
 // quedaba "como una foto" sin actualizarse solo. fetchHotTickers() ya
 // respeta su propio caché de 5min, así que llamarla cada 60s es seguro:
 // solo vuelve a pegarle a la red cuando el caché realmente expiró.
-setInterval(()=>{ if(activeId==="HOT") fetchHotTickers(); },60000);
+setInterval(()=>{ if(activeId==="HOT") fetchHotTickers(); if(activeId==="SURPRISE") fetchSurprise(); },60000);
 render(false,null);
 
 // Precargar la intensidad REAL de todos los eventos en segundo plano.

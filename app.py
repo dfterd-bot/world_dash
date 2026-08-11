@@ -3,6 +3,10 @@ import urllib.request
 import urllib.parse
 import json
 import os
+import time
+import threading
+import http.cookiejar
+import concurrent.futures
 import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta
 import psycopg2
@@ -140,6 +144,159 @@ KEYWORDS = {
     "SUPERBOWL": ["super bowl","world cup","championship","nfl","fifa","advertising"],
     "BTS":       ["back to school","retail sales","consumer spending","electronics demand"],
 }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SCREENER DE MERCADO DINÁMICO — tickers ROTATIVOS por sector/industria según el
+# evento. Antes el universo (SECTOR_MAP / UNIVERSE / SCORE_MAP) era fijo y siempre
+# mostraba los mismos ~120 nombres. Ahora cada solapa saca los MOVERS EN VIVO de
+# la industria relevante al evento (Yahoo screener), y los rankea por ScoreVivo =
+# momentum del día × intensidad de noticias del evento. Como los movers cambian
+# cada sesión y la intensidad cambia cada hora, los tickers ROTAN de verdad.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# event_id → [(industry | None, sector_fallback, direction, label), ...]
+# industry = string EXACTO de Yahoo (precisión) cuando matchea en el screener;
+# None ⇒ se usa el sector (más amplio) porque esa industria no indexa bien.
+EVENT_SCREEN = {
+    "HEATWAVE":  [(None,"Utilities","LONG","Generacion electrica"), ("Oil & Gas E&P","Energy","LONG","Gas & Energia")],
+    "HURRICANE": [("Building Products & Equipment","Industrials","LONG","Construccion / Generadores"), (None,"Financial Services","SHORT","Aseguradoras")],
+    "DROUGHT":   [("Agricultural Inputs","Basic Materials","LONG","Fertilizantes / Agro"), ("Packaged Foods","Consumer Defensive","SHORT","Alimentos")],
+    "FLOOD":     [("Building Materials","Industrials","LONG","Construccion / Infra"), (None,"Financial Services","SHORT","Aseguradoras")],
+    "PANDEMIC":  [("Biotechnology","Healthcare","LONG","Vacunas / Biotech"), ("Airlines","Industrials","SHORT","Aerolineas / Viajes")],
+    "FLU":       [(None,"Healthcare","LONG","Farma"), ("Diagnostics & Research","Healthcare","LONG","Diagnostico")],
+    "HORMUZ":    [("Oil & Gas E&P","Energy","LONG","Petroleo E&P"), ("Oil & Gas Equipment & Services","Energy","LONG","Servicios petroleros"), ("Airlines","Industrials","SHORT","Aerolineas")],
+    "TAIWAN":    [("Aerospace & Defense","Industrials","LONG","Defensa"), ("Gold","Basic Materials","LONG","Oro / Refugio"), ("Semiconductors","Technology","SHORT","Semiconductores")],
+    "NATO":      [("Aerospace & Defense","Industrials","LONG","Defensa"), ("Oil & Gas E&P","Energy","LONG","Energia"), ("Gold","Basic Materials","LONG","Oro / Refugio")],
+    "AI_BOOM":   [("Semiconductors","Technology","LONG","IA & Chips"), (None,"Utilities","LONG","Energia datacenters")],
+    "CYBER":     [(None,"Technology","LONG","Ciberseguridad / Software"), (None,"Financial Services","SHORT","Bancos afectados")],
+    "SUPERBOWL": [(None,"Consumer Defensive","LONG","Bebidas & Snacks"), ("Entertainment","Communication Services","LONG","Streaming & Media")],
+    "BTS":       [("Discount Stores","Consumer Cyclical","LONG","Retail"), ("Consumer Electronics","Technology","LONG","Electronica")],
+}
+
+YAHOO_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+_yahoo_auth = {"opener": None, "crumb": None, "ts": 0}
+_yahoo_auth_lock = threading.Lock()
+_screener_cache = {}          # {(kind,val,direction): {"ts":..., "data":[...]}}
+_screener_lock = threading.Lock()
+
+def _get_yahoo_auth():
+    """Cookie + crumb de Yahoo (cacheados ~50min), necesarios para el screener
+    custom filtrado por sector/industria. Devuelve (opener_con_cookies, crumb)."""
+    with _yahoo_auth_lock:
+        if _yahoo_auth["crumb"] and time.time() - _yahoo_auth["ts"] < 3000:
+            return _yahoo_auth["opener"], _yahoo_auth["crumb"]
+        try:
+            cj = http.cookiejar.CookieJar()
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+            opener.addheaders = [("User-Agent", YAHOO_UA)]
+            try: opener.open("https://fc.yahoo.com/", timeout=8)
+            except Exception: pass
+            crumb = opener.open("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=8).read().decode().strip()
+            if crumb and "<" not in crumb and len(crumb) < 40:
+                _yahoo_auth.update({"opener": opener, "crumb": crumb, "ts": time.time()})
+                return opener, crumb
+        except Exception as e:
+            print(f"[yahoo auth] {e}")
+        return _yahoo_auth.get("opener"), _yahoo_auth.get("crumb")
+
+def _run_screener(field, value, direction, count):
+    """POST al screener de Yahoo filtrando por `field` (sector|industry) = value,
+    US (NMS/NYQ), mcap>$2B, vol>300k. LONG/WATCH ⇒ top gainers; SHORT ⇒ top
+    losers. Devuelve [{sym,price,chg,mcap}] o [] si falla. Cache 5min."""
+    ckey = (field, value, direction)
+    with _screener_lock:
+        c = _screener_cache.get(ckey)
+        if c and time.time() - c["ts"] < 300:
+            return c["data"]
+    opener, crumb = _get_yahoo_auth()
+    if not opener or not crumb:
+        return []
+    sort_type = "ASC" if direction == "SHORT" else "DESC"
+    query = {"operator": "AND", "operands": [
+        {"operator": "eq", "operands": [field, value]},
+        {"operator": "gt", "operands": ["intradaymarketcap", 2000000000]},
+        {"operator": "gt", "operands": ["dayvolume", 300000]},
+        {"operator": "or", "operands": [
+            {"operator": "eq", "operands": ["exchange", "NMS"]},
+            {"operator": "eq", "operands": ["exchange", "NYQ"]}]}]}
+    body = json.dumps({"size": count, "offset": 0, "sortField": "percentchange",
+        "sortType": sort_type, "quoteType": "EQUITY", "query": query,
+        "userId": "", "userIdType": "guid"}).encode()
+    url = "https://query1.finance.yahoo.com/v1/finance/screener?crumb=" + urllib.parse.quote(crumb)
+    try:
+        req = urllib.request.Request(url, data=body, method="POST",
+            headers={"User-Agent": YAHOO_UA, "Content-Type": "application/json"})
+        d = json.loads(opener.open(req, timeout=12).read())
+        result = d.get("finance", {}).get("result") or []
+        quotes = result[0].get("quotes", []) if result else []
+        out = []
+        for q in quotes:
+            sym = q.get("symbol")
+            if not sym or "." in sym or "-" in sym:  # solo ordinarias US limpias
+                continue
+            out.append({"sym": sym,
+                        "price": round(q.get("regularMarketPrice") or 0, 2),
+                        "chg": round(q.get("regularMarketChangePercent") or 0, 2),
+                        "mcap": q.get("marketCap") or 0})
+        with _screener_lock:
+            _screener_cache[ckey] = {"ts": time.time(), "data": out}
+        return out
+    except Exception as e:
+        print(f"[screener {field}={value}/{direction}] {e}")
+        return []
+
+def screen_theme(industry, sector, direction, count=10):
+    """Movers de un tema: intenta por INDUSTRIA (preciso); si no devuelve nada,
+    cae al SECTOR (más amplio). Así rota con nombres on-theme donde se puede."""
+    if industry:
+        rows = _run_screener("industry", industry, direction, count)
+        if rows:
+            return rows
+    return _run_screener("sector", sector, direction, count)
+
+def _score_vivo(chg, direction, intensity):
+    """Score -100..100. Momentum del día en la dirección del evento, escalado por
+    la intensidad de noticias (0-100). LONG⇒+, SHORT⇒−, WATCH⇒neutro chico."""
+    mom = min(60.0, abs(chg) * 6.0)                       # ~10% de mov ⇒ 60 pts
+    base = 40.0 + mom                                     # 40..100
+    factor = 0.45 + 0.55 * (max(0, min(100, intensity)) / 100.0)  # 0.45..1.0
+    val = round(base * factor)
+    if direction == "SHORT": val = -val
+    elif direction == "WATCH": val = round(val * 0.5)
+    return int(max(-100, min(100, val)))
+
+def event_dynamic_sectors(event_id, intensity):
+    """Sectores dinámicos del evento en la forma exacta de SECTOR_MAP
+    (name/dir/tickers[{sym,score,reason,price,chg}]). None si el evento no tiene
+    mapa de screening o si el screener no devolvió nada (⇒ el caller usa el
+    fallback curado)."""
+    specs = EVENT_SCREEN.get(event_id)
+    if not specs:
+        return None
+    out = []
+    seen = set()
+    for industry, sector, direction, label in specs:
+        # Se intenta primero por industria (preciso, on-theme); si no matchea, se
+        # cae al sector (más amplio) y se marca el label con "(amplio)" para no
+        # dar a entender que son exactamente ese sub-rubro.
+        movers = _run_screener("industry", industry, direction, 8) if industry else []
+        if not movers:
+            movers = _run_screener("sector", sector, direction, 8)
+            label = f"{label} (amplio)"
+        tickers = []
+        for m in movers:
+            if m["sym"] in seen:      # no repetir el mismo ticker en dos sub-sectores
+                continue
+            seen.add(m["sym"])
+            chg = m["chg"]
+            tickers.append({"sym": m["sym"], "score": _score_vivo(chg, direction, intensity),
+                            "reason": f"{'+' if chg >= 0 else ''}{chg}% hoy · {label}",
+                            "price": m["price"], "chg": chg})
+            if len(tickers) >= 6:
+                break
+        if tickers:
+            out.append({"name": label, "dir": direction, "tickers": tickers})
+    return out or None
 
 RSS_FEEDS = [
     # Reuters discontinuó su RSS público (feeds.reuters.com estaba muerto).
@@ -289,6 +446,135 @@ def intensity_delta(event_id, headlines):
     except Exception as e:
         print(f"[AI DELTA {event_id}] fallback a keywords: {e}")
         return headline_intensity_delta(headlines), "keywords"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SOLAPA "SORPRESA" — eventos IMPREVISTOS descubiertos en tiempo real.
+# Pipeline: (1) descubrir temas trending (Google Trends + Google News top),
+# (2) clasificar con Claude Haiku qué son market-relevant y a qué sectores mueven
+# y en qué dirección, (3) screenear los movers en vivo de esos sectores (reusa el
+# screener dinámico), (4) rankear por ScoreVivo. Sin la clasificación de IA no se
+# puede mapear un evento nuevo a sectores random, así que sin API key devuelve [].
+# ═══════════════════════════════════════════════════════════════════════════════
+SURPRISE_SECTORS_VALID = {"Energy","Technology","Healthcare","Utilities","Industrials",
+    "Financial Services","Consumer Cyclical","Consumer Defensive","Basic Materials",
+    "Real Estate","Communication Services"}
+_surprise_cache = {"ts": 0, "data": None}
+_surprise_lock = threading.Lock()
+
+def fetch_trending_topics(max_topics=16):
+    """Temas trending EN VIVO: Google Trends daily (con titulares de contexto) +
+    top stories de Google News. Devuelve [{topic, traffic, headlines:[...]}]."""
+    out = []
+    try:
+        req = urllib.request.Request("https://trends.google.com/trending/rss?geo=US",
+              headers={"User-Agent": YAHOO_UA})
+        root = ET.fromstring(urllib.request.urlopen(req, timeout=10).read())
+        ns = {"ht": "https://trends.google.com/trending/rss"}
+        for it in root.findall(".//item"):
+            topic = (it.findtext("title") or "").strip()
+            traffic = (it.findtext("ht:approx_traffic", default="", namespaces=ns) or "").strip()
+            heads = [(n.findtext("ht:news_item_title", namespaces=ns) or "").strip()
+                     for n in it.findall("ht:news_item", ns)]
+            heads = [h for h in heads if h][:2]
+            if topic:
+                out.append({"topic": topic, "traffic": traffic, "headlines": heads})
+    except Exception as e:
+        print(f"[trending trends] {e}")
+    try:
+        req = urllib.request.Request("https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
+              headers={"User-Agent": YAHOO_UA})
+        root = ET.fromstring(urllib.request.urlopen(req, timeout=10).read())
+        for it in root.findall(".//item")[:10]:
+            title = (it.findtext("title") or "").strip()
+            if title:
+                out.append({"topic": title, "traffic": "", "headlines": []})
+    except Exception as e:
+        print(f"[trending news] {e}")
+    return out[:max_topics]
+
+def classify_surprise_events(topics):
+    """Claude Haiku: filtra los temas market-relevant y los mapea a sector +
+    dirección + intensidad. [] si no hay API key o nada relevante."""
+    if not ANTHROPIC_API_KEY or not topics:
+        return []
+    lines = []
+    for t in topics:
+        h = " | ".join(t.get("headlines", []))
+        lines.append(f"- {t['topic']}" + (f" ({h})" if h else ""))
+    sectores = ", ".join(sorted(SURPRISE_SECTORS_VALID))
+    prompt = (
+        "Sos analista de trading. Abajo hay temas/titulares TRENDING ahora mismo. "
+        "Identificá SOLO los que puedan mover acciones de algún sector (ignorá "
+        "deportes, celebridades, entretenimiento y política sin impacto económico). "
+        "Para cada uno relevante, decí qué sectores se benefician (LONG) o se "
+        "perjudican (SHORT) y la intensidad 0-100.\n\n"
+        f"Sectores válidos (usá EXACTAMENTE estos nombres): {sectores}.\n\n"
+        f"TEMAS:\n" + "\n".join(lines) + "\n\n"
+        "Respondé SOLO un JSON array, sin texto extra:\n"
+        '[{"title":"nombre corto del evento","summary":"1 frase","intensity":N,'
+        '"sectors":[{"sector":"<uno valido>","dir":"LONG|SHORT","label":"sub-tema corto"}]}]\n'
+        "Máx 5 eventos, los más relevantes. Si ninguno es relevante, respondé [].")
+    try:
+        body = json.dumps({"model": "claude-haiku-4-5-20251001", "max_tokens": 1000,
+            "messages": [{"role": "user", "content": prompt}]}).encode()
+        req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body,
+            headers={"Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY,
+                     "anthropic-version": "2023-06-01"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read())
+        texto = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+        texto = texto.replace("```json", "").replace("```", "").strip()
+        i, j = texto.find("["), texto.rfind("]")
+        if i >= 0 and j > i:
+            texto = texto[i:j+1]
+        events = json.loads(texto)
+        out = []
+        for e in events[:5]:
+            secs = []
+            for s in (e.get("sectors") or []):
+                sec, dr = s.get("sector"), s.get("dir")
+                if sec in SURPRISE_SECTORS_VALID and dr in ("LONG", "SHORT"):
+                    secs.append({"sector": sec, "dir": dr, "label": (s.get("label") or sec)[:28]})
+            if secs:
+                out.append({"title": str(e.get("title", ""))[:60],
+                            "summary": str(e.get("summary", ""))[:160],
+                            "intensity": max(0, min(100, int(e.get("intensity", 50)))),
+                            "sectors": secs})
+        return out
+    except Exception as e:
+        print(f"[surprise classify] {e}")
+        return []
+
+def get_surprise_events():
+    """Pipeline completo con cache 45min: descubrir → clasificar (IA) → screenear
+    movers en vivo por sector → ScoreVivo. Listo para el frontend."""
+    with _surprise_lock:
+        if _surprise_cache["data"] is not None and time.time() - _surprise_cache["ts"] < 2700:
+            return _surprise_cache["data"]
+    classified = classify_surprise_events(fetch_trending_topics())
+    events = []
+    for ev in classified:
+        sectors_out, seen = [], set()
+        for s in ev["sectors"]:
+            tickers = []
+            for m in _run_screener("sector", s["sector"], s["dir"], 8):
+                if m["sym"] in seen:
+                    continue
+                seen.add(m["sym"])
+                chg = m["chg"]
+                tickers.append({"sym": m["sym"], "score": _score_vivo(chg, s["dir"], ev["intensity"]),
+                                "reason": f"{'+' if chg >= 0 else ''}{chg}% hoy · {s['label']}",
+                                "price": m["price"], "chg": chg})
+                if len(tickers) >= 5:
+                    break
+            if tickers:
+                sectors_out.append({"name": s["label"], "dir": s["dir"], "tickers": tickers})
+        if sectors_out:
+            events.append({"title": ev["title"], "summary": ev["summary"],
+                           "intensity": ev["intensity"], "sectors": sectors_out})
+    with _surprise_lock:
+        _surprise_cache.update({"ts": time.time(), "data": events})
+    return events
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def fetch_price(symbol):
@@ -603,10 +889,15 @@ def score(event_id):
         ei = get_event_intensity(event_id)
         intensity, base_intensity, delta, decay, fuente, headlines = \
             ei["intensity"], ei["base"], ei["delta"], ei["decay"], ei["fuente"], ei["headlines"]
-        sectors_out = []
-        for sec in sectors:
-            tickers_out = [{"sym":sym,"score":scores_raw.get(sym,0),"reason":""} for sym in sec["tickers"]]
-            sectors_out.append({"name":sec["name"],"dir":sec["dir"],"tickers":tickers_out})
+        # Sectores DINÁMICOS: movers en vivo de la industria del evento, rankeados
+        # por ScoreVivo (momentum × intensidad). Si el screener falla/no devuelve,
+        # cae a la lista curada estática de SECTOR_MAP (nunca deja la solapa vacía).
+        sectors_out = event_dynamic_sectors(event_id, intensity)
+        if not sectors_out:
+            sectors_out = []
+            for sec in sectors:
+                tickers_out = [{"sym":sym,"score":scores_raw.get(sym,0),"reason":""} for sym in sec["tickers"]]
+                sectors_out.append({"name":sec["name"],"dir":sec["dir"],"tickers":tickers_out})
         signal = "ACTIVE" if intensity>=70 else "ELEVATED" if intensity>=45 else "QUIET"
         return jsonify({
             "eventIntensity": intensity, "signal": signal,
@@ -673,47 +964,62 @@ def hot():
     """Top tickers rankeados por hotScore = 60% extremo de RSI + 40%
     intensidad de noticias del evento (ver get_event_intensity)."""
     try:
-        UNIVERSE = {
-            "HEATWAVE":  [("LONG",["CEG","VST","NRG","AES","ETR","LNG","EQT","AR","LII","CARR"]),("WATCH",["NEE","DUK","SO","AEP"])],
-            "HURRICANE": [("LONG",["GNRC","HD","LOW","SHW","MLM","VMC","MPC","VLO"]),("SHORT",["RE","RNR","MKL"])],
-            "DROUGHT":   [("LONG",["MOS","NTR","CF","ICL","CTVA","FMC","AWK","WTRG"]),("SHORT",["CPB","SJM","CAG","MKC"])],
-            "FLOOD":     [("LONG",["XYL","AWK","VMC","MLM","NUE"]),("SHORT",["ALL","TRV","CB","HIG"])],
-            "PANDEMIC":  [("LONG",["MRNA","PFE","BNTX","NVAX","QDEL","BDX","DHR","TMO"]),("SHORT",["UAL","DAL","MAR","HLT"])],
-            "FLU":       [("LONG",["GILD","ABBV","JNJ","MRK","CVS","WBA"]),("WATCH",["HCA","THC"])],
-            "HORMUZ":    [("LONG",["XOM","CVX","OXY","COP","EOG","SLB","HAL","BKR"]),("SHORT",["UAL","DAL","AAL"]),("WATCH",["ZIM","MATX"])],
-            "TAIWAN":    [("LONG",["LMT","RTX","NOC","GD","HII","GLD","IAU","NEM"]),("SHORT",["NVDA","AMD","AMAT","LRCX","AAPL"])],
-            "NATO":      [("LONG",["LMT","RTX","NOC","XOM","CVX","LNG","GLD","TLT"]),("SHORT",["SPY","QQQ","IWM"])],
-            "AI_BOOM":   [("LONG",["NVDA","AMD","AVGO","MRVL","CEG","VST","VRT","SMCI","CIEN","CSCO"])],
-            "CYBER":     [("LONG",["CRWD","PANW","ZS","FTNT","S","LDOS","SAIC","BAH"]),("SHORT",["JPM","BAC","NEE"])],
-            "SUPERBOWL": [("LONG",["PEP","KO","TAP","NFLX","META","TTD","DASH","UBER"]),("WATCH",["WMT","TGT"])],
-            "BTS":       [("LONG",["WMT","TGT","AMZN","AAPL","DELL","HPQ","UPS","FDX"]),("WATCH",["NKE","PVH"])],
-        }
-
-        # Score plano (máximo |score|) por símbolo — se calcula PRIMERO porque
-        # ahora también se usa para resolver qué evento/dirección gana cuando
-        # el mismo ticker aparece en más de un evento (ver bug de abajo).
+        # Score plano (SCORE_MAP estático) — solo fallback del score si el
+        # screener dinámico no cubre un símbolo.
         flat_scores = {}
         for ev_id, scores in SCORE_MAP.items():
             for sym, sc in scores.items():
                 if sym not in flat_scores or abs(sc) > abs(flat_scores[sym]):
                     flat_scores[sym] = sc
 
-        # Build dedup universe — antes esto se quedaba con el PRIMER evento que
-        # apareciera en el diccionario (orden arbitrario de Python), lo que
-        # hacía que p.ej. NVDA quedara atrapado como SHORT de TAIWAN (-65) y
-        # jamás se evaluara como LONG de AI_BOOM (90, el score más fuerte de
-        # toda la base). Ahora gana el evento con mayor |score| en SCORE_MAP.
+        # UNIVERSO DINÁMICO — movers en vivo de las industrias de cada evento
+        # (screener), en vez del listado fijo. Screening paralelo por evento;
+        # dedup por símbolo quedándose con el evento donde tiene mayor |ScoreVivo|.
+        def _screen_event(ev_id):
+            inten = get_event_intensity(ev_id)["intensity"]
+            rows = []
+            for industry, sector, direction, label in EVENT_SCREEN.get(ev_id, []):
+                for m in screen_theme(industry, sector, direction, count=8):
+                    rows.append((m["sym"], direction, _score_vivo(m["chg"], direction, inten)))
+            return ev_id, rows
+
         universe = {}
-        for ev_id, secs in UNIVERSE.items():
-            for dir_, tickers in secs:
-                for sym in tickers:
-                    candidato_abs = abs(SCORE_MAP.get(ev_id, {}).get(sym, 0))
-                    actual = universe.get(sym)
-                    if actual is None or candidato_abs > actual["_score_abs"]:
-                        universe[sym] = {"sym": sym, "dir": dir_, "event": ev_id,
-                                          "_score_abs": candidato_abs}
-        for v in universe.values():
-            v.pop("_score_abs", None)
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+                for ev_id, rows in ex.map(_screen_event, list(EVENT_SCREEN.keys())):
+                    for sym, direction, sv in rows:
+                        actual = universe.get(sym)
+                        if actual is None or abs(sv) > abs(actual["score"]):
+                            universe[sym] = {"sym": sym, "dir": direction, "event": ev_id, "score": sv}
+        except Exception as e:
+            print(f"[hot universo dinámico] {e}")
+
+        # FALLBACK: si el screener no devolvió nada (rate-limit/caída de Yahoo),
+        # se usa el universo curado estático viejo para no dejar HOT vacío.
+        if not universe:
+            UNIVERSE = {
+                "HEATWAVE":  [("LONG",["CEG","VST","NRG","AES","ETR","LNG","EQT","AR","LII","CARR"]),("WATCH",["NEE","DUK","SO","AEP"])],
+                "HURRICANE": [("LONG",["GNRC","HD","LOW","SHW","MLM","VMC","MPC","VLO"]),("SHORT",["RE","RNR","MKL"])],
+                "DROUGHT":   [("LONG",["MOS","NTR","CF","ICL","CTVA","FMC","AWK","WTRG"]),("SHORT",["CPB","SJM","CAG","MKC"])],
+                "FLOOD":     [("LONG",["XYL","AWK","VMC","MLM","NUE"]),("SHORT",["ALL","TRV","CB","HIG"])],
+                "PANDEMIC":  [("LONG",["MRNA","PFE","BNTX","NVAX","QDEL","BDX","DHR","TMO"]),("SHORT",["UAL","DAL","MAR","HLT"])],
+                "FLU":       [("LONG",["GILD","ABBV","JNJ","MRK","CVS","WBA"]),("WATCH",["HCA","THC"])],
+                "HORMUZ":    [("LONG",["XOM","CVX","OXY","COP","EOG","SLB","HAL","BKR"]),("SHORT",["UAL","DAL","AAL"]),("WATCH",["ZIM","MATX"])],
+                "TAIWAN":    [("LONG",["LMT","RTX","NOC","GD","HII","GLD","IAU","NEM"]),("SHORT",["NVDA","AMD","AMAT","LRCX","AAPL"])],
+                "NATO":      [("LONG",["LMT","RTX","NOC","XOM","CVX","LNG","GLD","TLT"]),("SHORT",["SPY","QQQ","IWM"])],
+                "AI_BOOM":   [("LONG",["NVDA","AMD","AVGO","MRVL","CEG","VST","VRT","SMCI","CIEN","CSCO"])],
+                "CYBER":     [("LONG",["CRWD","PANW","ZS","FTNT","S","LDOS","SAIC","BAH"]),("SHORT",["JPM","BAC","NEE"])],
+                "SUPERBOWL": [("LONG",["PEP","KO","TAP","NFLX","META","TTD","DASH","UBER"]),("WATCH",["WMT","TGT"])],
+                "BTS":       [("LONG",["WMT","TGT","AMZN","AAPL","DELL","HPQ","UPS","FDX"]),("WATCH",["NKE","PVH"])],
+            }
+            for ev_id, secs in UNIVERSE.items():
+                for dir_, tickers in secs:
+                    for sym in tickers:
+                        cand_abs = abs(SCORE_MAP.get(ev_id, {}).get(sym, 0))
+                        actual = universe.get(sym)
+                        if actual is None or cand_abs > abs(actual["score"]):
+                            universe[sym] = {"sym": sym, "dir": dir_, "event": ev_id,
+                                             "score": SCORE_MAP.get(ev_id, {}).get(sym, 0)}
 
         # Fetch price + calc RSI for all
         import concurrent.futures
@@ -793,9 +1099,11 @@ def hot():
             elif t["dir"] == "SHORT": t["rsiScore"] = t["rsi"]
             else: t["rsiScore"] = abs(t["rsi"] - 50)
 
-        # Add score from SCORE_MAP
+        # Score: el ScoreVivo dinámico ya viene en el universo; si faltara (símbolo
+        # del fallback estático sin score), se completa con SCORE_MAP.
         for t in valid:
-            t["score"] = flat_scores.get(t["sym"], 0)
+            if t.get("score") is None:
+                t["score"] = flat_scores.get(t["sym"], 0)
 
         # Intensidad de noticias por evento — antes el ranking miraba
         # SOLO qué tan extremo estaba el RSI, sin importar si el evento que
@@ -838,6 +1146,15 @@ def hot():
         return jsonify({"tickers": top4, "total_scanned": len(valid)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/surprise")
+def surprise():
+    """Eventos IMPREVISTOS: trending → clasificación IA → movers en vivo por
+    sector. has_ai=false ⇒ falta ANTHROPIC_API_KEY (la solapa avisa)."""
+    try:
+        return jsonify({"events": get_surprise_events(), "has_ai": bool(ANTHROPIC_API_KEY)})
+    except Exception as e:
+        return jsonify({"events": [], "has_ai": bool(ANTHROPIC_API_KEY), "error": str(e)}), 500
 
 @app.route("/api/log", methods=["POST"])
 def trigger_log():
