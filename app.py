@@ -545,33 +545,107 @@ def classify_surprise_events(topics):
         print(f"[surprise classify] {e}")
         return []
 
+def _yahoo_quotes(symbols):
+    """Batch quote v7 (con crumb): {sym: {price, chg, relvol, mcap}} para varios
+    símbolos en UNA sola llamada."""
+    if not symbols:
+        return {}
+    opener, crumb = _get_yahoo_auth()
+    if not opener or not crumb:
+        return {}
+    url = ("https://query1.finance.yahoo.com/v7/finance/quote?symbols="
+           + urllib.parse.quote(",".join(symbols[:40])) + "&crumb=" + urllib.parse.quote(crumb))
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": YAHOO_UA})
+        d = json.loads(opener.open(req, timeout=12).read())
+        out = {}
+        for q in d.get("quoteResponse", {}).get("result", []):
+            sym = q.get("symbol")
+            if not sym:
+                continue
+            vol, avg = q.get("regularMarketVolume"), q.get("averageDailyVolume3Month")
+            out[sym] = {"price": round(q.get("regularMarketPrice") or 0, 2),
+                        "chg": round(q.get("regularMarketChangePercent") or 0, 2),
+                        "relvol": round(vol / avg, 2) if vol and avg else None,
+                        "mcap": q.get("marketCap") or 0}
+        return out
+    except Exception as e:
+        print(f"[yahoo quotes] {e}")
+        return {}
+
+def fetch_trending_symbols():
+    """Símbolos con ATENCIÓN inusual ahora: Yahoo trending + StockTwits trending.
+    {sym: n_fuentes} — n=2 (aparece en ambas) es sorpresa de alta confianza.
+    Filtra a equities US ordinarias (sin cripto/índices/puntos)."""
+    counts = {}
+    def add(sym):
+        s = (sym or "").upper().strip().lstrip("$")
+        if not s or not s.isalnum() or len(s) > 5:
+            return
+        counts[s] = counts.get(s, 0) + 1
+    try:
+        req = urllib.request.Request("https://query1.finance.yahoo.com/v1/finance/trending/US?count=25",
+              headers={"User-Agent": YAHOO_UA})
+        d = json.loads(urllib.request.urlopen(req, timeout=10).read())
+        r = d.get("finance", {}).get("result", [])
+        for q in (r[0].get("quotes", []) if r else []):
+            add(q.get("symbol"))
+    except Exception as e:
+        print(f"[trending yahoo] {e}")
+    try:
+        req = urllib.request.Request("https://api.stocktwits.com/api/2/trending/symbols.json",
+              headers={"User-Agent": YAHOO_UA})
+        d = json.loads(urllib.request.urlopen(req, timeout=10).read())
+        for s in d.get("symbols", []):
+            add(s.get("symbol"))
+    except Exception as e:
+        print(f"[trending stocktwits] {e}")
+    return counts
+
+def _surprise_score(chg, relvol, n_src):
+    """Score 0-100: movimiento del día + volumen relativo + cross-source."""
+    mov = min(45.0, abs(chg or 0) * 4.5)                       # 10% ⇒ 45
+    rv  = min(30.0, ((relvol or 1) - 1) * 20) if relvol else 0  # relvol 2.5 ⇒ 30
+    xs  = 25 if n_src >= 2 else 8                              # en ambas listas ⇒ +25
+    return int(max(0, min(100, 40 + mov * 0.5 + rv + xs - 10)))
+
 def get_surprise_events():
-    """Pipeline completo con cache 45min: descubrir → clasificar (IA) → screenear
-    movers en vivo por sector → ScoreVivo. Listo para el frontend."""
+    """SORPRESA = radar de ATENCIÓN INUSUAL (Yahoo trending + StockTwits),
+    enriquecido con precio/%/relvol. NO usa el LLM ni los eventos predefinidos →
+    genuinamente distinto de HOT (que está anclado a los 13 eventos). Cache 15min.
+    Se agrupa en subiendo/cayendo para reusar la UI existente."""
     with _surprise_lock:
-        if _surprise_cache["data"] is not None and time.time() - _surprise_cache["ts"] < 2700:
+        if _surprise_cache["data"] is not None and time.time() - _surprise_cache["ts"] < 900:
             return _surprise_cache["data"]
-    classified = classify_surprise_events(fetch_trending_topics())
+    counts = fetch_trending_symbols()
+    quotes = _yahoo_quotes(list(counts.keys()))
+    rows = []
+    for sym, n in counts.items():
+        q = quotes.get(sym)
+        if not q or not q["price"] or q.get("mcap", 0) < 300_000_000:   # sin ilíquidos/micro
+            continue
+        rows.append({"sym": sym, "chg": q["chg"], "price": q["price"],
+                     "relvol": q.get("relvol"), "n_src": n,
+                     "surp": _surprise_score(q["chg"], q.get("relvol"), n)})
+    rows.sort(key=lambda r: -r["surp"])
+    rows = rows[:12]
+    def _mk(r, dir_):
+        rv = f" · vol x{r['relvol']}" if r.get("relvol") else ""
+        xs = " · 2 fuentes" if r["n_src"] >= 2 else ""
+        return {"sym": r["sym"], "score": (r["surp"] if dir_ == "LONG" else -r["surp"]),
+                "reason": f"{'+' if r['chg'] >= 0 else ''}{r['chg']}%{rv}{xs}",
+                "price": r["price"], "chg": r["chg"]}
+    up = [_mk(r, "LONG") for r in rows if r["chg"] >= 0]
+    dn = [_mk(r, "SHORT") for r in rows if r["chg"] < 0]
+    sectors = []
+    if up: sectors.append({"name": "Subiendo fuerte", "dir": "LONG", "tickers": up})
+    if dn: sectors.append({"name": "Cayendo fuerte", "dir": "SHORT", "tickers": dn})
     events = []
-    for ev in classified:
-        sectors_out, seen = [], set()
-        for s in ev["sectors"]:
-            tickers = []
-            for m in _run_screener("sector", s["sector"], s["dir"], 8):
-                if m["sym"] in seen:
-                    continue
-                seen.add(m["sym"])
-                chg = m["chg"]
-                tickers.append({"sym": m["sym"], "score": _score_vivo(chg, s["dir"], ev["intensity"]),
-                                "reason": f"{'+' if chg >= 0 else ''}{chg}% hoy · {s['label']}",
-                                "price": m["price"], "chg": chg})
-                if len(tickers) >= 5:
-                    break
-            if tickers:
-                sectors_out.append({"name": s["label"], "dir": s["dir"], "tickers": tickers})
-        if sectors_out:
-            events.append({"title": ev["title"], "summary": ev["summary"],
-                           "intensity": ev["intensity"], "sectors": sectors_out})
+    if sectors:
+        inten = min(100, int(sum(r["surp"] for r in rows) / max(1, len(rows))))
+        events = [{"title": "Atención inusual ahora", "intensity": inten,
+                   "summary": "Tickers con volumen/buzz anormal — fuera del radar de eventos de HOT",
+                   "sectors": sectors}]
     with _surprise_lock:
         _surprise_cache.update({"ts": time.time(), "data": events})
     return events
