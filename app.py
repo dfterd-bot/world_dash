@@ -447,6 +447,135 @@ def intensity_delta(event_id, headlines):
         print(f"[AI DELTA {event_id}] fallback a keywords: {e}")
         return headline_intensity_delta(headlines), "keywords"
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# SOLAPA "SORPRESA" — eventos IMPREVISTOS descubiertos en tiempo real.
+# Pipeline: (1) descubrir temas trending (Google Trends + Google News top),
+# (2) clasificar con Claude Haiku qué son market-relevant y a qué sectores mueven
+# y en qué dirección, (3) screenear los movers en vivo de esos sectores (reusa el
+# screener dinámico), (4) rankear por ScoreVivo. Sin la clasificación de IA no se
+# puede mapear un evento nuevo a sectores random, así que sin API key devuelve [].
+# ═══════════════════════════════════════════════════════════════════════════════
+SURPRISE_SECTORS_VALID = {"Energy","Technology","Healthcare","Utilities","Industrials",
+    "Financial Services","Consumer Cyclical","Consumer Defensive","Basic Materials",
+    "Real Estate","Communication Services"}
+_surprise_cache = {"ts": 0, "data": None}
+_surprise_lock = threading.Lock()
+
+def fetch_trending_topics(max_topics=16):
+    """Temas trending EN VIVO: Google Trends daily (con titulares de contexto) +
+    top stories de Google News. Devuelve [{topic, traffic, headlines:[...]}]."""
+    out = []
+    try:
+        req = urllib.request.Request("https://trends.google.com/trending/rss?geo=US",
+              headers={"User-Agent": YAHOO_UA})
+        root = ET.fromstring(urllib.request.urlopen(req, timeout=10).read())
+        ns = {"ht": "https://trends.google.com/trending/rss"}
+        for it in root.findall(".//item"):
+            topic = (it.findtext("title") or "").strip()
+            traffic = (it.findtext("ht:approx_traffic", default="", namespaces=ns) or "").strip()
+            heads = [(n.findtext("ht:news_item_title", namespaces=ns) or "").strip()
+                     for n in it.findall("ht:news_item", ns)]
+            heads = [h for h in heads if h][:2]
+            if topic:
+                out.append({"topic": topic, "traffic": traffic, "headlines": heads})
+    except Exception as e:
+        print(f"[trending trends] {e}")
+    try:
+        req = urllib.request.Request("https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
+              headers={"User-Agent": YAHOO_UA})
+        root = ET.fromstring(urllib.request.urlopen(req, timeout=10).read())
+        for it in root.findall(".//item")[:10]:
+            title = (it.findtext("title") or "").strip()
+            if title:
+                out.append({"topic": title, "traffic": "", "headlines": []})
+    except Exception as e:
+        print(f"[trending news] {e}")
+    return out[:max_topics]
+
+def classify_surprise_events(topics):
+    """Claude Haiku: filtra los temas market-relevant y los mapea a sector +
+    dirección + intensidad. [] si no hay API key o nada relevante."""
+    if not ANTHROPIC_API_KEY or not topics:
+        return []
+    lines = []
+    for t in topics:
+        h = " | ".join(t.get("headlines", []))
+        lines.append(f"- {t['topic']}" + (f" ({h})" if h else ""))
+    sectores = ", ".join(sorted(SURPRISE_SECTORS_VALID))
+    prompt = (
+        "Sos analista de trading. Abajo hay temas/titulares TRENDING ahora mismo. "
+        "Identificá SOLO los que puedan mover acciones de algún sector (ignorá "
+        "deportes, celebridades, entretenimiento y política sin impacto económico). "
+        "Para cada uno relevante, decí qué sectores se benefician (LONG) o se "
+        "perjudican (SHORT) y la intensidad 0-100.\n\n"
+        f"Sectores válidos (usá EXACTAMENTE estos nombres): {sectores}.\n\n"
+        f"TEMAS:\n" + "\n".join(lines) + "\n\n"
+        "Respondé SOLO un JSON array, sin texto extra:\n"
+        '[{"title":"nombre corto del evento","summary":"1 frase","intensity":N,'
+        '"sectors":[{"sector":"<uno valido>","dir":"LONG|SHORT","label":"sub-tema corto"}]}]\n'
+        "Máx 5 eventos, los más relevantes. Si ninguno es relevante, respondé [].")
+    try:
+        body = json.dumps({"model": "claude-haiku-4-5-20251001", "max_tokens": 1000,
+            "messages": [{"role": "user", "content": prompt}]}).encode()
+        req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body,
+            headers={"Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY,
+                     "anthropic-version": "2023-06-01"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read())
+        texto = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+        texto = texto.replace("```json", "").replace("```", "").strip()
+        i, j = texto.find("["), texto.rfind("]")
+        if i >= 0 and j > i:
+            texto = texto[i:j+1]
+        events = json.loads(texto)
+        out = []
+        for e in events[:5]:
+            secs = []
+            for s in (e.get("sectors") or []):
+                sec, dr = s.get("sector"), s.get("dir")
+                if sec in SURPRISE_SECTORS_VALID and dr in ("LONG", "SHORT"):
+                    secs.append({"sector": sec, "dir": dr, "label": (s.get("label") or sec)[:28]})
+            if secs:
+                out.append({"title": str(e.get("title", ""))[:60],
+                            "summary": str(e.get("summary", ""))[:160],
+                            "intensity": max(0, min(100, int(e.get("intensity", 50)))),
+                            "sectors": secs})
+        return out
+    except Exception as e:
+        print(f"[surprise classify] {e}")
+        return []
+
+def get_surprise_events():
+    """Pipeline completo con cache 45min: descubrir → clasificar (IA) → screenear
+    movers en vivo por sector → ScoreVivo. Listo para el frontend."""
+    with _surprise_lock:
+        if _surprise_cache["data"] is not None and time.time() - _surprise_cache["ts"] < 2700:
+            return _surprise_cache["data"]
+    classified = classify_surprise_events(fetch_trending_topics())
+    events = []
+    for ev in classified:
+        sectors_out, seen = [], set()
+        for s in ev["sectors"]:
+            tickers = []
+            for m in _run_screener("sector", s["sector"], s["dir"], 8):
+                if m["sym"] in seen:
+                    continue
+                seen.add(m["sym"])
+                chg = m["chg"]
+                tickers.append({"sym": m["sym"], "score": _score_vivo(chg, s["dir"], ev["intensity"]),
+                                "reason": f"{'+' if chg >= 0 else ''}{chg}% hoy · {s['label']}",
+                                "price": m["price"], "chg": chg})
+                if len(tickers) >= 5:
+                    break
+            if tickers:
+                sectors_out.append({"name": s["label"], "dir": s["dir"], "tickers": tickers})
+        if sectors_out:
+            events.append({"title": ev["title"], "summary": ev["summary"],
+                           "intensity": ev["intensity"], "sectors": sectors_out})
+    with _surprise_lock:
+        _surprise_cache.update({"ts": time.time(), "data": events})
+    return events
+
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def fetch_price(symbol):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=30d"
@@ -1017,6 +1146,15 @@ def hot():
         return jsonify({"tickers": top4, "total_scanned": len(valid)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/surprise")
+def surprise():
+    """Eventos IMPREVISTOS: trending → clasificación IA → movers en vivo por
+    sector. has_ai=false ⇒ falta ANTHROPIC_API_KEY (la solapa avisa)."""
+    try:
+        return jsonify({"events": get_surprise_events(), "has_ai": bool(ANTHROPIC_API_KEY)})
+    except Exception as e:
+        return jsonify({"events": [], "has_ai": bool(ANTHROPIC_API_KEY), "error": str(e)}), 500
 
 @app.route("/api/log", methods=["POST"])
 def trigger_log():
