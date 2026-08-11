@@ -555,13 +555,9 @@ function renderSurprise(){
   if(!hm)return;
   if(tm)tm.innerHTML="";
   const c=surpriseCache,events=c?.events||[];
-  if(hdr)hdr.innerHTML=`<div style="font-size:8px;color:#A855F7;letter-spacing:3px;margin-bottom:3px">⚡ SORPRESA</div><div style="font-size:14px;font-weight:700;color:#fff">Eventos imprevistos · sectores en tiempo real</div>`;
-  if(c&&c.has_ai===false){
-    hm.innerHTML=`<div style="padding:16px;background:#2a1a3a;border:1px solid #A855F7;border-radius:8px;font-size:11px;color:#d8b4fe">⚡ Falta configurar <b>ANTHROPIC_API_KEY</b> en Railway.<br><span style="color:#9a7bb8">Sin la IA no se pueden mapear eventos nuevos a sectores. Seteala y esta solapa cobra vida.</span></div>`;
-    return;
-  }
+  if(hdr)hdr.innerHTML=`<div style="font-size:8px;color:#A855F7;letter-spacing:3px;margin-bottom:3px">⚡ SORPRESA</div><div style="font-size:14px;font-weight:700;color:#fff">Atención inusual · Yahoo + StockTwits trending</div>`;
   if(!events.length){
-    hm.innerHTML=`<div style="padding:20px 0;font-size:10px;color:#4a8aaa">Sin eventos sorpresa market-relevant ahora · presioná SCAN</div>`;
+    hm.innerHTML=`<div style="padding:20px 0;font-size:10px;color:#4a8aaa">${c&&c.error?"Sin conexión":"Sin sorpresas ahora"} · presioná SCAN</div>`;
     return;
   }
   let html="";
