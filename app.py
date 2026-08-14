@@ -1281,11 +1281,17 @@ def hot():
         for t in valid:
             t["hotScore"] = round(t["rsiScore"]*RSI_WEIGHT + t["newsIntensity"]*NEWS_WEIGHT, 1)
 
-        top4 = sorted(valid, key=lambda x: x["hotScore"], reverse=True)[:5]
+        # Cantidad configurable con ?n= : la CARD en vivo pide 5 (default) y los
+        # enriquece con StockTwits/SEC. El canal WD del bot (y su backtest) piden
+        # ?n=40 para tener un UNIVERSO amplio y backtesteable — sin ese enriquecimiento
+        # caro (fuentes con rate limit que WD no usa: opera con la señal técnica del bot).
+        try: n_want = max(1, min(60, int(request.args.get("n", 5))))
+        except Exception: n_want = 5
+        top4 = sorted(valid, key=lambda x: x["hotScore"], reverse=True)[:n_want]
 
         # Enriquecer SOLO los finalistas con StockTwits + SEC Form 4 —
         # son fuentes externas con rate limit, no tiene sentido pegarle
-        # a las 122 del universo completo, solo a los 5 que van a salir.
+        # a las 122 del universo completo. Se omite para universos grandes (>8).
         def _enrich(t):
             st = fetch_stocktwits_sentiment(t["sym"])
             ins = fetch_insider_activity(t["sym"])
@@ -1295,8 +1301,9 @@ def hot():
             t["insider_n_filings"]  = ins["n_filings"]
             return t
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
-            top4 = list(ex.map(_enrich, top4))
+        if n_want <= 8:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+                top4 = list(ex.map(_enrich, top4))
 
         return jsonify({"tickers": top4, "total_scanned": len(valid)})
     except Exception as e:
