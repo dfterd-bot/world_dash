@@ -265,38 +265,69 @@ def _score_vivo(chg, direction, intensity):
     elif direction == "WATCH": val = round(val * 0.5)
     return int(max(-100, min(100, val)))
 
+_chg_memo = {}   # sym -> (ts, chg%) — cache TTL 5min, para no re-pegar a Yahoo por cada solapa
+
+def _live_chg_batch(syms, ttl=300):
+    """chg% en vivo (precio vs cierre previo) para una lista de símbolos, via el
+    chart endpoint de Yahoo (v8, SIN crumb → funciona en Railway, a diferencia del
+    screener por industria que Yahoo bloquea por IP). Threadpool + cache 5min
+    (cachea None también, para no machacar símbolos sin dato). Devuelve {sym: chg}
+    solo de los que respondieron."""
+    now = time.time()
+    faltan = [s for s in syms if not (_chg_memo.get(s) and now - _chg_memo[s][0] < ttl)]
+    def _one(sym):
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=2d"
+            req = urllib.request.Request(url, headers={"User-Agent": YAHOO_UA})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                m = json.loads(r.read())["chart"]["result"][0]["meta"]
+            price = m.get("regularMarketPrice")
+            prev = m.get("regularMarketPreviousClose") or m.get("chartPreviousClose")
+            if price and prev:
+                return sym, round((price - prev) / prev * 100, 2)
+        except Exception:
+            pass
+        return sym, None
+    if faltan:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
+            for sym, chg in ex.map(_one, faltan):
+                _chg_memo[sym] = (now, chg)
+    return {s: _chg_memo[s][1] for s in syms if _chg_memo.get(s) and _chg_memo[s][1] is not None}
+
 def event_dynamic_sectors(event_id, intensity):
-    """Sectores dinámicos del evento en la forma exacta de SECTOR_MAP
-    (name/dir/tickers[{sym,score,reason,price,chg}]). None si el evento no tiene
-    mapa de screening o si el screener no devolvió nada (⇒ el caller usa el
-    fallback curado)."""
-    specs = EVENT_SCREEN.get(event_id)
-    if not specs:
+    """Sectores del evento con datos EN VIVO: mantiene los sub-sectores y tickers
+    temáticos curados (SECTOR_MAP) — no existe fuente SIN crumb para rotar nombres
+    por industria (Yahoo bloquea ese endpoint desde Railway) — pero calcula el
+    ScoreVivo con el % REAL de hoy y re-rankea cada grupo por actividad. Así la
+    solapa deja de mostrar scores CONGELADOS. Cae al score estático por-símbolo
+    cuando Yahoo no da dato. Forma: [{name,dir,tickers[{sym,score,reason,chg}]}].
+    None si el evento no tiene mapa (⇒ el caller usa el fallback curado)."""
+    secs = SECTOR_MAP.get(event_id)
+    if not secs:
         return None
+    scores_raw = SCORE_MAP.get(event_id, {})
+    syms = []
+    for sec in secs:
+        for s in sec["tickers"]:
+            if s not in syms:
+                syms.append(s)
+    live = _live_chg_batch(syms)
     out = []
-    seen = set()
-    for industry, sector, direction, label in specs:
-        # Se intenta primero por industria (preciso, on-theme); si no matchea, se
-        # cae al sector (más amplio) y se marca el label con "(amplio)" para no
-        # dar a entender que son exactamente ese sub-rubro.
-        movers = _run_screener("industry", industry, direction, 8) if industry else []
-        if not movers:
-            movers = _run_screener("sector", sector, direction, 8)
-            label = f"{label} (amplio)"
+    for sec in secs:
+        direction = sec["dir"]
         tickers = []
-        for m in movers:
-            if m["sym"] in seen:      # no repetir el mismo ticker en dos sub-sectores
-                continue
-            seen.add(m["sym"])
-            chg = m["chg"]
-            tickers.append({"sym": m["sym"], "score": _score_vivo(chg, direction, intensity),
-                            "reason": f"{'+' if chg >= 0 else ''}{chg}% hoy · {label}",
-                            "price": m["price"], "chg": chg})
-            if len(tickers) >= 6:
-                break
-        if tickers:
-            out.append({"name": label, "dir": direction, "tickers": tickers})
-    return out or None
+        for s in sec["tickers"]:
+            chg = live.get(s)
+            if chg is not None:
+                sc = _score_vivo(chg, direction, intensity)
+                reason = f"{'+' if chg >= 0 else ''}{chg}% hoy"
+            else:
+                sc = scores_raw.get(s, 0)   # sin dato en vivo → score estático
+                reason = ""
+            tickers.append({"sym": s, "score": sc, "reason": reason, "chg": chg})
+        tickers.sort(key=lambda x: -abs(x["score"]))   # el más activo del sub-sector primero
+        out.append({"name": sec["name"], "dir": direction, "tickers": tickers})
+    return out
 
 # ── UNIVERSO market-wide para HOT (movers reales, sin crumb) ────────────────
 # El screener custom por industria (event_dynamic_sectors / screen_theme) usa un
@@ -1342,7 +1373,27 @@ def hot():
         # caro (fuentes con rate limit que WD no usa: opera con la señal técnica del bot).
         try: n_want = max(1, min(60, int(request.args.get("n", 5))))
         except Exception: n_want = 5
-        top4 = sorted(valid, key=lambda x: x["hotScore"], reverse=True)[:n_want]
+        # Balance LONG/SHORT: ni una dirección pasa del 60% del top. Los screeners
+        # traen muchos más gainers (⇒ RSI alto ⇒ SHORT), así que sin este tope HOT
+        # quedaba casi todo SHORT. Se respeta el hotScore dentro de cada lado; si
+        # falta variedad (poca de una dirección), se completa con el resto por score.
+        ranked = sorted(valid, key=lambda x: x["hotScore"], reverse=True)
+        cap = max(1, round(n_want * 0.6))
+        top4 = []; nl = ns = 0
+        for t in ranked:
+            d = t.get("dir")
+            if d == "LONG" and nl >= cap: continue
+            if d == "SHORT" and ns >= cap: continue
+            top4.append(t)
+            if d == "LONG": nl += 1
+            elif d == "SHORT": ns += 1
+            if len(top4) >= n_want: break
+        if len(top4) < n_want:
+            have = {id(x) for x in top4}
+            for t in ranked:
+                if id(t) not in have:
+                    top4.append(t)
+                    if len(top4) >= n_want: break
 
         # Enriquecer SOLO los finalistas con StockTwits + SEC Form 4 —
         # son fuentes externas con rate limit, no tiene sentido pegarle
