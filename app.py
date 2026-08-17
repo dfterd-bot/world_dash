@@ -753,6 +753,27 @@ def _fetch_fundamentals(sym):
         _fund_cache[sym] = (time.time(), out)
     return out
 
+# ── Gate de calidad para los LONG del HOT ───────────────────────────────────
+# Un oversold NO es un buen LONG si (a) viene en caída libre hoy (cuchillo, no
+# rebote) o (b) es un value-trap (ROE<5% o PE>40). Ej: TTEC RSI 27 pero −37.77%
+# y ROE −103% → fuera; HRB RSI 17.6 +9.14% y rentable → queda. ROE de Yahoo viene
+# en FRACCIÓN (−1.03 = −103%). Solo se usa en la card (n<=8); el n=40 del bot ya
+# filtra por su lado.
+HOT_LONG_ROE_MIN  = 0.05     # 5%
+HOT_LONG_PE_MAX   = 40.0
+HOT_FALLING_KNIFE = -20.0    # chg% : cae más que esto hoy ⇒ cuchillo, no rebote
+
+def _hot_long_ok(sym, chg):
+    """True si un LONG (oversold) del HOT es un rebote sano y no un cuchillo/
+    value-trap. Fail-open si no hay fundamentos (el falling-knife ya saca lo peor)."""
+    if (chg or 0) <= HOT_FALLING_KNIFE:
+        return False
+    f = _fetch_fundamentals(sym)
+    roe = f.get("roe"); pe = f.get("pe")
+    if roe is not None and roe < HOT_LONG_ROE_MIN: return False
+    if pe  is not None and pe  > HOT_LONG_PE_MAX:  return False
+    return True
+
 def _val_upside(pe, peg, roe):
     """0..1 combinando PE/PEG/ROE (equal weight de lo disponible). PE<=0
     (sin ganancias) y ROE negativo puntúan 0. None si no hay ningún dato."""
@@ -1379,8 +1400,15 @@ def hot():
         # falta variedad (poca de una dirección), se completa con el resto por score.
         ranked = sorted(valid, key=lambda x: x["hotScore"], reverse=True)
         cap = max(1, round(n_want * 0.6))
+        # Gate de calidad de los LONG solo en la card (n<=8): saca cuchillos/value-
+        # traps (ej. TTEC). El n=40 del bot no lo aplica (el bot ya filtra por su lado
+        # y no conviene el costo de fundamentos sobre 40 nombres).
+        gate = (n_want <= 8)
+        def _ok(t):
+            return not (gate and t.get("dir") == "LONG" and not _hot_long_ok(t["sym"], t.get("chg")))
         top4 = []; nl = ns = 0
         for t in ranked:
+            if not _ok(t): continue
             d = t.get("dir")
             if d == "LONG" and nl >= cap: continue
             if d == "SHORT" and ns >= cap: continue
@@ -1391,7 +1419,7 @@ def hot():
         if len(top4) < n_want:
             have = {id(x) for x in top4}
             for t in ranked:
-                if id(t) not in have:
+                if id(t) not in have and _ok(t):
                     top4.append(t)
                     if len(top4) >= n_want: break
 
