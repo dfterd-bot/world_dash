@@ -298,6 +298,74 @@ def event_dynamic_sectors(event_id, intensity):
             out.append({"name": label, "dir": direction, "tickers": tickers})
     return out or None
 
+# ── UNIVERSO market-wide para HOT (movers reales, sin crumb) ────────────────
+# El screener custom por industria (event_dynamic_sectors / screen_theme) usa un
+# endpoint de Yahoo con crumb que Railway tiene BLOQUEADO por IP: en prod devolvía
+# vacío y HOT quedaba pegado a la lista fija de abajo (siempre los mismos nombres).
+# Los screeners PREDEFINIDOS (GET, sin crumb) SÍ responden desde Railway — es lo
+# que usa el trading-bot. Con esto el universo de HOT rota a diario con movers de
+# verdad de todo el mercado, no una lista curada fija.
+HOT_MOVER_SCREENS = ["day_gainers", "day_losers", "most_actives",
+                     "undervalued_growth_stocks", "small_cap_gainers", "aggressive_small_caps"]
+_movers_cache = {"ts": 0, "data": None}
+
+def fetch_predefined_movers(count=30):
+    """Movers market-wide via screener predefinido de Yahoo (GET, sin crumb).
+    Junta gainers+losers+actives+growth+small-caps y dedup. Cache 5min. Nunca
+    rompe: si un screener falla, se saltea; si fallan todos, devuelve []."""
+    import time as _t
+    if _movers_cache["data"] is not None and _t.time() - _movers_cache["ts"] < 300:
+        return _movers_cache["data"]
+    seen = {}
+    for scr in HOT_MOVER_SCREENS:
+        try:
+            url = ("https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
+                   f"?scrIds={scr}&count={count}")
+            req = urllib.request.Request(url, headers={"User-Agent": YAHOO_UA})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                d = json.loads(r.read())
+            for q in d.get("finance", {}).get("result", [{}])[0].get("quotes", []):
+                sym = q.get("symbol")
+                if not sym or any(c in sym for c in ".-="):   # solo ordinarias US limpias
+                    continue
+                if sym not in seen:
+                    seen[sym] = {"sym": sym,
+                                 "chg": round(q.get("regularMarketChangePercent") or 0, 2),
+                                 "price": round(q.get("regularMarketPrice") or 0, 2)}
+        except Exception as e:
+            print(f"[movers {scr}] {e}")
+    out = list(seen.values())
+    if out:
+        _movers_cache.update({"ts": _t.time(), "data": out})
+    return out
+
+# Lista curada por-evento — ahora cumple DOS roles: (1) FALLBACK si los movers
+# predefinidos fallan, y (2) fuente del TAG de evento: si un mover cae en la lista
+# de un evento se le pone ese chip; si no, es "MERCADO".
+CURATED_UNIVERSE = {
+    "HEATWAVE":  [("LONG",["CEG","VST","NRG","AES","ETR","LNG","EQT","AR","LII","CARR"]),("WATCH",["NEE","DUK","SO","AEP"])],
+    "HURRICANE": [("LONG",["GNRC","HD","LOW","SHW","MLM","VMC","MPC","VLO"]),("SHORT",["RE","RNR","MKL"])],
+    "DROUGHT":   [("LONG",["MOS","NTR","CF","ICL","CTVA","FMC","AWK","WTRG"]),("SHORT",["CPB","SJM","CAG","MKC"])],
+    "FLOOD":     [("LONG",["XYL","AWK","VMC","MLM","NUE"]),("SHORT",["ALL","TRV","CB","HIG"])],
+    "PANDEMIC":  [("LONG",["MRNA","PFE","BNTX","NVAX","QDEL","BDX","DHR","TMO"]),("SHORT",["UAL","DAL","MAR","HLT"])],
+    "FLU":       [("LONG",["GILD","ABBV","JNJ","MRK","CVS","WBA"]),("WATCH",["HCA","THC"])],
+    "HORMUZ":    [("LONG",["XOM","CVX","OXY","COP","EOG","SLB","HAL","BKR"]),("SHORT",["UAL","DAL","AAL"]),("WATCH",["ZIM","MATX"])],
+    "TAIWAN":    [("LONG",["LMT","RTX","NOC","GD","HII","GLD","IAU","NEM"]),("SHORT",["NVDA","AMD","AMAT","LRCX","AAPL"])],
+    "NATO":      [("LONG",["LMT","RTX","NOC","XOM","CVX","LNG","GLD","TLT"]),("SHORT",["SPY","QQQ","IWM"])],
+    "AI_BOOM":   [("LONG",["NVDA","AMD","AVGO","MRVL","CEG","VST","VRT","SMCI","CIEN","CSCO"])],
+    "CYBER":     [("LONG",["CRWD","PANW","ZS","FTNT","S","LDOS","SAIC","BAH"]),("SHORT",["JPM","BAC","NEE"])],
+    "SUPERBOWL": [("LONG",["PEP","KO","TAP","NFLX","META","TTD","DASH","UBER"]),("WATCH",["WMT","TGT"])],
+    "BTS":       [("LONG",["WMT","TGT","AMZN","AAPL","DELL","HPQ","UPS","FDX"]),("WATCH",["NKE","PVH"])],
+}
+# sym -> (event, dir, |score|): el evento donde el símbolo tiene mayor |score| gana el tag.
+SYM_EVENT = {}
+for _ev, _secs in CURATED_UNIVERSE.items():
+    for _dir, _tickers in _secs:
+        for _s in _tickers:
+            _cand = abs(SCORE_MAP.get(_ev, {}).get(_s, 0))
+            if _s not in SYM_EVENT or _cand > SYM_EVENT[_s][2]:
+                SYM_EVENT[_s] = (_ev, _dir, _cand)
+
 RSS_FEEDS = [
     # WIRES financieros primero (squawk rápido, market-moving) — reemplazan el
     # valor que daría una cuenta tipo @deitaone en X, gratis y sin API key.
@@ -1132,60 +1200,26 @@ def hot():
     """Top tickers rankeados por hotScore = 60% extremo de RSI + 40%
     intensidad de noticias del evento (ver get_event_intensity)."""
     try:
-        # Score plano (SCORE_MAP estático) — solo fallback del score si el
-        # screener dinámico no cubre un símbolo.
-        flat_scores = {}
-        for ev_id, scores in SCORE_MAP.items():
-            for sym, sc in scores.items():
-                if sym not in flat_scores or abs(sc) > abs(flat_scores[sym]):
-                    flat_scores[sym] = sc
-
-        # UNIVERSO DINÁMICO — movers en vivo de las industrias de cada evento
-        # (screener), en vez del listado fijo. Screening paralelo por evento;
-        # dedup por símbolo quedándose con el evento donde tiene mayor |ScoreVivo|.
-        def _screen_event(ev_id):
-            inten = get_event_intensity(ev_id)["intensity"]
-            rows = []
-            for industry, sector, direction, label in EVENT_SCREEN.get(ev_id, []):
-                for m in screen_theme(industry, sector, direction, count=8):
-                    rows.append((m["sym"], direction, _score_vivo(m["chg"], direction, inten)))
-            return ev_id, rows
-
+        # UNIVERSO market-wide: movers reales del screener PREDEFINIDO de Yahoo
+        # (GET, sin crumb → SÍ funciona en Railway). Rota a diario. Cada mover se
+        # etiqueta con su evento si cae en una lista curada (chip); si no, queda
+        # "MERCADO" y su dirección se define por RSI extremo más abajo. El número
+        # ScoreVivo también se calcula abajo, con el % en vivo.
         universe = {}
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
-                for ev_id, rows in ex.map(_screen_event, list(EVENT_SCREEN.keys())):
-                    for sym, direction, sv in rows:
-                        actual = universe.get(sym)
-                        if actual is None or abs(sv) > abs(actual["score"]):
-                            universe[sym] = {"sym": sym, "dir": direction, "event": ev_id, "score": sv}
-        except Exception as e:
-            print(f"[hot universo dinámico] {e}")
+        for m in fetch_predefined_movers(count=30):
+            sym = m["sym"]; tag = SYM_EVENT.get(sym)
+            universe[sym] = {"sym": sym, "event": (tag[0] if tag else None),
+                             "dir": (tag[1] if tag else "WATCH"), "score": None}
 
-        # FALLBACK: si el screener no devolvió nada (rate-limit/caída de Yahoo),
-        # se usa el universo curado estático viejo para no dejar HOT vacío.
+        # FALLBACK: si los movers predefinidos fallan (rate-limit/caída de Yahoo),
+        # se usa la lista curada para no dejar HOT vacío.
         if not universe:
-            UNIVERSE = {
-                "HEATWAVE":  [("LONG",["CEG","VST","NRG","AES","ETR","LNG","EQT","AR","LII","CARR"]),("WATCH",["NEE","DUK","SO","AEP"])],
-                "HURRICANE": [("LONG",["GNRC","HD","LOW","SHW","MLM","VMC","MPC","VLO"]),("SHORT",["RE","RNR","MKL"])],
-                "DROUGHT":   [("LONG",["MOS","NTR","CF","ICL","CTVA","FMC","AWK","WTRG"]),("SHORT",["CPB","SJM","CAG","MKC"])],
-                "FLOOD":     [("LONG",["XYL","AWK","VMC","MLM","NUE"]),("SHORT",["ALL","TRV","CB","HIG"])],
-                "PANDEMIC":  [("LONG",["MRNA","PFE","BNTX","NVAX","QDEL","BDX","DHR","TMO"]),("SHORT",["UAL","DAL","MAR","HLT"])],
-                "FLU":       [("LONG",["GILD","ABBV","JNJ","MRK","CVS","WBA"]),("WATCH",["HCA","THC"])],
-                "HORMUZ":    [("LONG",["XOM","CVX","OXY","COP","EOG","SLB","HAL","BKR"]),("SHORT",["UAL","DAL","AAL"]),("WATCH",["ZIM","MATX"])],
-                "TAIWAN":    [("LONG",["LMT","RTX","NOC","GD","HII","GLD","IAU","NEM"]),("SHORT",["NVDA","AMD","AMAT","LRCX","AAPL"])],
-                "NATO":      [("LONG",["LMT","RTX","NOC","XOM","CVX","LNG","GLD","TLT"]),("SHORT",["SPY","QQQ","IWM"])],
-                "AI_BOOM":   [("LONG",["NVDA","AMD","AVGO","MRVL","CEG","VST","VRT","SMCI","CIEN","CSCO"])],
-                "CYBER":     [("LONG",["CRWD","PANW","ZS","FTNT","S","LDOS","SAIC","BAH"]),("SHORT",["JPM","BAC","NEE"])],
-                "SUPERBOWL": [("LONG",["PEP","KO","TAP","NFLX","META","TTD","DASH","UBER"]),("WATCH",["WMT","TGT"])],
-                "BTS":       [("LONG",["WMT","TGT","AMZN","AAPL","DELL","HPQ","UPS","FDX"]),("WATCH",["NKE","PVH"])],
-            }
-            for ev_id, secs in UNIVERSE.items():
+            for ev_id, secs in CURATED_UNIVERSE.items():
                 for dir_, tickers in secs:
                     for sym in tickers:
                         cand_abs = abs(SCORE_MAP.get(ev_id, {}).get(sym, 0))
                         actual = universe.get(sym)
-                        if actual is None or cand_abs > abs(actual["score"]):
+                        if actual is None or cand_abs > abs(actual.get("score") or 0):
                             universe[sym] = {"sym": sym, "dir": dir_, "event": ev_id,
                                              "score": SCORE_MAP.get(ev_id, {}).get(sym, 0)}
 
@@ -1261,35 +1295,43 @@ def hot():
 
         valid = [r for r in results if r and r.get("rsi") is not None]
 
+        # Dirección de los MERCADO (sin chip de evento) por RSI EXTREMO — es lo
+        # que le da sentido al "RSI extremo" del HOT: sobrevendido⇒LONG (rebote),
+        # sobrecomprado⇒SHORT (fade), medio⇒WATCH (rankea bajo y no molesta).
+        for t in valid:
+            if not t.get("event"):
+                t["dir"] = "LONG" if t["rsi"] <= 40 else "SHORT" if t["rsi"] >= 60 else "WATCH"
+
         # Score by RSI extremity
         for t in valid:
             if t["dir"] == "LONG":  t["rsiScore"] = 100 - t["rsi"]
             elif t["dir"] == "SHORT": t["rsiScore"] = t["rsi"]
             else: t["rsiScore"] = abs(t["rsi"] - 50)
 
-        # Score: el ScoreVivo dinámico ya viene en el universo; si faltara (símbolo
-        # del fallback estático sin score), se completa con SCORE_MAP.
+        # Intensidad: por-evento (noticias, 1 vez por evento, en paralelo, cache
+        # 5min — ver get_event_intensity) para los que tienen chip; para los
+        # MERCADO, la MAGNITUD del mover (un +12% pesa más que un +2%), así los
+        # movers grandes compiten con los eventos calientes.
+        eventos_presentes = list({t["event"] for t in valid if t.get("event")})
+        intensidades = {}
+        if eventos_presentes:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(eventos_presentes)) as ex:
+                intens_vals = list(ex.map(lambda ev: get_event_intensity(ev)["intensity"], eventos_presentes))
+            intensidades = dict(zip(eventos_presentes, intens_vals))
+        for t in valid:
+            if t.get("event"):
+                t["newsIntensity"] = intensidades.get(t["event"], 40)
+            else:
+                t["newsIntensity"] = round(min(85.0, 45.0 + abs(t.get("chg") or 0) * 3.0), 1)
+
+        # ScoreVivo (el número grande de la card): si no vino de la lista curada,
+        # se calcula con el % en vivo, la dirección y la intensidad.
         for t in valid:
             if t.get("score") is None:
-                t["score"] = flat_scores.get(t["sym"], 0)
-
-        # Intensidad de noticias por evento — antes el ranking miraba
-        # SOLO qué tan extremo estaba el RSI, sin importar si el evento que
-        # lo justifica está frío o escalando de verdad ahora mismo. Se
-        # calcula 1 vez POR EVENTO (no por ticker) y en paralelo, con cache
-        # de 5min (ver get_event_intensity), para no multiplicar el costo
-        # de RSS por los ~13 eventos del universo en cada request.
-        eventos_presentes = list({t["event"] for t in valid if t.get("event")})
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(eventos_presentes))) as ex:
-            intens_vals = list(ex.map(lambda ev: get_event_intensity(ev)["intensity"], eventos_presentes))
-        intensidades = dict(zip(eventos_presentes, intens_vals))
-        for t in valid:
-            t["newsIntensity"] = intensidades.get(t.get("event"), 40)
+                t["score"] = _score_vivo(t.get("chg") or 0, t["dir"], t["newsIntensity"])
 
         # Ranking combinado: 60% extremo de RSI (timing técnico) + 40%
-        # intensidad de noticias del evento (contexto real) — antes era
-        # 100% RSI, así que un evento completamente frío en las noticias
-        # podía salir "hot" igual que uno con escalada real esta hora.
+        # intensidad (noticias del evento, o magnitud del mover si es MERCADO).
         RSI_WEIGHT, NEWS_WEIGHT = 0.6, 0.4
         for t in valid:
             t["hotScore"] = round(t["rsiScore"]*RSI_WEIGHT + t["newsIntensity"]*NEWS_WEIGHT, 1)
