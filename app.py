@@ -299,9 +299,20 @@ def event_dynamic_sectors(event_id, intensity):
     return out or None
 
 RSS_FEEDS = [
-    # Reuters discontinuó su RSS público (feeds.reuters.com estaba muerto).
-    # Feeds generales que SÍ funcionan; el grueso de la señal por-evento ahora
-    # viene de fetch_google_news() (búsqueda automática con las keywords).
+    # WIRES financieros primero (squawk rápido, market-moving) — reemplazan el
+    # valor que daría una cuenta tipo @deitaone en X, gratis y sin API key.
+    # FinancialJuice es un firehose de titulares macro/commodities/bancos
+    # centrales al estilo de un squawk de terminal. El resto suma velocidad y
+    # cobertura por-ticker (earnings, breaking corporativo). Van ANTES que los
+    # feeds generales para ganar el cupo por-evento de fetch_rss.
+    "https://www.financialjuice.com/feed.ashx?xml=RSS",        # FinancialJuice (squawk macro/breaking)
+    "https://finance.yahoo.com/news/rssindex",                 # Yahoo Finance news
+    "https://www.investing.com/rss/news.rss",                  # Investing.com (macro/Fed/tasas)
+    "https://seekingalpha.com/market_currents.xml",            # Seeking Alpha market currents (breaking)
+    "https://www.nasdaq.com/feed/rssoutbound?category=Markets",# NASDAQ markets (earnings/corporativo)
+    # Feeds generales — geopolítica y contexto. Reuters discontinuó su RSS
+    # público; el grueso de la señal targeted por-evento sigue viniendo de
+    # fetch_google_news() (búsqueda automática con las keywords).
     "https://www.cnbc.com/id/100003114/device/rss/rss.html",   # CNBC business
     "https://feeds.bbci.co.uk/news/business/rss.xml",          # BBC business
     "https://feeds.bbci.co.uk/news/world/rss.xml",             # BBC world (geopolítica)
@@ -837,6 +848,7 @@ def fetch_rss(event_id):
             req = urllib.request.Request(feed_url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=6) as r:
                 root = ET.fromstring(r.read())
+            f_count = 0   # tope por-feed: que ningún feed monopolice el cupo del evento
             for item in root.findall(".//item")[:30]:
                 title = (item.find("title").text or "") if item.find("title") is not None else ""
                 desc  = (item.find("description").text or "") if item.find("description") is not None else ""
@@ -846,10 +858,11 @@ def fetch_rss(event_id):
                     pos = sum(1 for w in ["surge","rise","gain","jump","boost","record"] if w in combined)
                     impact = "BEARISH" if neg > pos else "NEUTRAL" if neg == pos else "BULLISH"
                     headlines.append({"title":title[:120],"source":feed_url.split("/")[2].replace("www.","").replace("feeds.",""),"impact":impact,"summary":desc[:100].strip()})
-                    if len(headlines) >= 5: break
+                    f_count += 1
+                    if f_count >= 3 or len(headlines) >= 8: break
         except: continue
-        if len(headlines) >= 5: break
-    return headlines[:5]
+        if len(headlines) >= 8: break
+    return headlines[:8]
 
 def fetch_google_news(event_id, max_items=5):
     """Feed AUTOMÁTICO por evento vía Google News RSS de BÚSQUEDA. Arma la query
@@ -1006,7 +1019,7 @@ def price(symbol):
         return jsonify({"error": str(e)}), 500
 
 # ── Cache de intensidad por evento (RSS + IA/keywords) ──────────────────────
-# fetch_rss() pega contra 4 feeds por evento — para 1 evento en
+# fetch_rss() pega contra los feeds (wires + generales) por evento — para 1 en
 # /api/score/<id> no pasa nada, pero /api/hot necesita la intensidad de
 # TODOS los eventos que aparecen entre sus candidatos, y sin cache eso son
 # hasta ~13×4 fetches por request. TTL 5min: las noticias no cambian tan
